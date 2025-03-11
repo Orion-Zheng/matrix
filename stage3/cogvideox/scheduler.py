@@ -559,12 +559,60 @@ def expand_timesteps_with_group(
 
 
 class CogVideoXSwinDPMScheduler(CogVideoXDPMScheduler):
+    
+    @register_to_config
     def __init__(
         self,
-        *args,
-        **kwargs,
+        num_train_timesteps: int = 1000,
+        beta_start: float = 0.00085,
+        beta_end: float = 0.0120,
+        beta_schedule: str = "scaled_linear",
+        trained_betas: Optional[Union[np.ndarray, List[float]]] = None,
+        clip_sample: bool = True,
+        set_alpha_to_one: bool = True,
+        steps_offset: int = 0,
+        prediction_type: str = "epsilon",
+        clip_sample_range: float = 1.0,
+        sample_max_value: float = 1.0,
+        timestep_spacing: str = "leading",
+        rescale_betas_zero_snr: bool = False,
+        snr_shift_scale: float = 3.0,
     ):
-        super().__init__(*args, **kwargs)
+        if trained_betas is not None:
+            self.betas = torch.tensor(trained_betas, dtype=torch.float32)
+        elif beta_schedule == "linear":
+            self.betas = torch.linspace(beta_start, beta_end, num_train_timesteps, dtype=torch.float32)
+        elif beta_schedule == "scaled_linear":
+            # this schedule is very specific to the latent diffusion model.
+            self.betas = torch.linspace(beta_start**0.5, beta_end**0.5, num_train_timesteps, dtype=torch.float64) ** 2
+        elif beta_schedule == "squaredcos_cap_v2":
+            # Glide cosine schedule
+            self.betas = betas_for_alpha_bar(num_train_timesteps)
+        else:
+            raise NotImplementedError(f"{beta_schedule} is not implemented for {self.__class__}")
+
+        self.alphas = 1.0 - self.betas
+        self.alphas_cumprod = torch.cumprod(self.alphas, dim=0)
+
+        # Modify: SNR shift following SD3
+        self.alphas_cumprod = self.alphas_cumprod / (snr_shift_scale + (1 - snr_shift_scale) * self.alphas_cumprod)
+
+        # Rescale for zero SNR
+        if rescale_betas_zero_snr:
+            self.alphas_cumprod = rescale_zero_terminal_snr(self.alphas_cumprod)
+
+        # At every step in ddim, we are looking into the previous alphas_cumprod
+        # For the final step, there is no previous alphas_cumprod because we are already at 0
+        # `set_alpha_to_one` decides whether we set this parameter simply to one or
+        # whether we use the final alpha of the "non-previous" one.
+        self.final_alpha_cumprod = torch.tensor(1.0) if set_alpha_to_one else self.alphas_cumprod[0]
+
+        # standard deviation of the initial noise distribution
+        self.init_noise_sigma = 1.0
+
+        # setable values
+        self.num_inference_steps = None
+        self.timesteps = torch.from_numpy(np.arange(0, num_train_timesteps)[::-1].copy().astype(np.int64))
 
     def add_noise(
         self,

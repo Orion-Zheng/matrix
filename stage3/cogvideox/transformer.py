@@ -26,10 +26,29 @@ from diffusers.models.attention import Attention, FeedForward
 from diffusers.models.modeling_outputs import Transformer2DModelOutput
 from diffusers.models.modeling_utils import ModelMixin
 
+from xfuser.core.distributed import (
+    get_world_group,
+    get_runtime_state,
+    get_classifier_free_guidance_world_size,
+    get_classifier_free_guidance_rank,
+    get_cfg_group,
+    get_sequence_parallel_world_size,
+    get_sequence_parallel_rank,
+    get_sp_group,
+    is_dp_last_group,
+    initialize_runtime_state,
+    get_pipeline_parallel_world_size,
+    model_parallel_is_initialized,
+)
+
 from .attention_processor import AttentionProcessor, CogVideoXAttnProcessor2_0, FusedCogVideoXAttnProcessor2_0
 from .embedding import CogVideoXPatchEmbed, TimestepEmbedding, Timesteps
 from .normalization import AdaLayerNorm, CogVideoXLayerNormZero
 from .control_adapter import CogVideoXControlBlock
+from .xfuser.attention_processor import (
+    xFuserCogVideoXAttnProcessor2_0,
+    xFuserCogVideoXControlAttnProcessor2_0
+)
 
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
@@ -498,6 +517,18 @@ class CogVideoXTransformer3DModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
         # Control enbedding
         control_emb = self.control_embedding(control_emb)
 
+        # 2.5. Prepare input for sequence parallel
+        if model_parallel_is_initialized():
+            seq_length = text_seq_length + hidden_states.shape[-2]
+            self.prepare_attn_processor_for_sequence_parallel(
+                seq_length = seq_length, num_frames = num_frames
+            )
+
+            hidden_states, encoder_hidden_states, timestep, image_rotary_emb = \
+                self.prepare_input_for_sequence_parallel(
+                num_frames, hidden_states, encoder_hidden_states, timestep, image_rotary_emb
+            )
+
         # 3. Transformer blocks
         combined_blocks = []
         for block in self.transformer_blocks[:self.control_start_layer]:
@@ -569,6 +600,10 @@ class CogVideoXTransformer3DModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
         hidden_states = self.norm_out(hidden_states, temb=emb)
         hidden_states = self.proj_out(hidden_states)
 
+        # 4.5 Prepare output for sequence parallel
+        if model_parallel_is_initialized():
+            hidden_states = self.prepare_output_for_sequence_parallel(num_frames, hidden_states)
+
         # 5. Unpatchify
         # Note: we use `-1` instead of `channels`:
         #   - It is okay to `channels` use for CogVideoX-2b and CogVideoX-5b (number of input channels is equal to output channels)
@@ -584,3 +619,81 @@ class CogVideoXTransformer3DModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
         if not return_dict:
             return (output,)
         return Transformer2DModelOutput(sample=output)
+
+    def prepare_input_for_sequence_parallel(
+        self,
+        num_frames: int, 
+        hidden_states: torch.Tensor,
+        encoder_hidden_states: torch.Tensor,
+        timestep: Union[int, float, torch.LongTensor],  # [B, ...]
+        image_rotary_emb: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+    ):
+        assert image_rotary_emb is None
+        sp_size = get_sequence_parallel_world_size()
+        sp_rank = get_sequence_parallel_rank()
+        cfg_size = get_classifier_free_guidance_world_size()
+        cfg_rank = get_classifier_free_guidance_rank()
+
+        if get_runtime_state().split_text_embed_in_sp is None:
+            if encoder_hidden_states.shape[-2] % sp_size != 0:
+                get_runtime_state().split_text_embed_in_sp = False
+            else:
+                get_runtime_state().split_text_embed_in_sp = True
+        
+        if (
+            get_runtime_state().split_text_embed_in_sp 
+            and encoder_hidden_states.shape[-2] % sp_size != 0
+        ): # padding encoder_hidden_states with zeros at 0 index for SP 
+            B, L, C = encoder_hidden_states.shape
+            padding_length = sp_size - L % sp_size
+            encoder_hidden_states = torch.cat([
+                encoder_hidden_states.new_zeros([B, padding_length, C]),
+                encoder_hidden_states,
+            ], dim=-2)
+        
+        if getattr(self.config, 'patch_size_t', None) is None:
+            temporal_size = hidden_states.shape[1]
+        else:
+            temporal_size = hidden_states.shape[1] // self.config.patch_size_t
+        if isinstance(timestep, torch.Tensor) and timestep.ndim != 0 and timestep.shape[0] == hidden_states.shape[0]:
+            timestep = torch.chunk(timestep, cfg_size, dim=0)[cfg_rank]
+
+        # split hidden_state into different GPU
+        # hidden_states: [B, FxHxW, C] (from [B, F, C, H, W])
+        # [CFG]
+        hidden_states = torch.chunk(hidden_states, cfg_size, dim=0)[cfg_rank]
+        # [SP]: split along spatial dimension
+        f = num_frames
+        b, l, c = hidden_states.shape
+        s = l // f
+        hidden_states = hidden_states.view(b, f, s, c)
+        hidden_states = torch.chunk(hidden_states, get_sequence_parallel_world_size(),dim=-2)[sp_rank]
+        hidden_states = hidden_states.reshape(b, -1, c)
+        # split encoder_hidden_states into different GPU
+        encoder_hidden_states = torch.chunk(encoder_hidden_states, cfg_size, dim=0)[cfg_rank]
+        if get_runtime_state().split_text_embed_in_sp:
+            encoder_hidden_states = torch.chunk(encoder_hidden_states, sp_size, dim=-2)[sp_rank]
+        return hidden_states, encoder_hidden_states, timestep, image_rotary_emb
+
+    def prepare_output_for_sequence_parallel(
+        self,
+        num_frames: int,
+        output: torch.Tensor,
+    ):
+        f = num_frames
+        b, l, c = output.shape
+        output = output.view(b, f, l // f, c)
+        output = get_sp_group().all_gather(output, dim=-2)
+        output = output.reshape(b, -1, c)
+        output = get_cfg_group().all_gather(output, dim=0)
+        return output
+
+    def prepare_attn_processor_for_sequence_parallel(
+        self,
+        seq_length: int,
+        num_frames: int,
+    ):
+        for block in self.transformer_blocks:
+            block.attn1.processor = xFuserCogVideoXAttnProcessor2_0(seq_length=seq_length)
+        for block in self.control_blocks:
+            block.attn1.processor = xFuserCogVideoXControlAttnProcessor2_0(temporal_length=num_frames)

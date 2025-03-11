@@ -66,6 +66,11 @@ EXAMPLE_DOC_STRING = """
         ```
 """
 
+def randn_like(tensor, generator=None):
+    return randn_tensor(
+        tensor.shape,
+        generator=generator, dtype=tensor.dtype, device=tensor.device
+    )
 
 # Similar to diffusers.pipelines.hunyuandit.pipeline_hunyuandit.get_resize_crop_region_for_grid
 def get_resize_crop_region_for_grid(src, tgt_width, tgt_height):
@@ -1101,6 +1106,7 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
 
         # Control signal
         control_start = 0 if with_frame_cond else 1
+        _ = self.get_control_from_signal(list(CONTROL_SIGNAL_TO_PROMPT.keys())[0], control_start, control_start+num_frames) # warm-up
 
         print("Starting streaming video prediction...")
         latents_pop_stream = []
@@ -1110,6 +1116,8 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
             # Control signal
             control_emb = self.get_control_from_signal(control_signal, control_start, control_start+num_frames)
             control_emb = control_emb.unsqueeze(0).to(prompt_embeds.dtype).contiguous()
+            if do_classifier_free_guidance:
+                control_emb = torch.cat([control_emb] * 2)
             control_start += window_size
 
             with self.progress_bar(total=inner_steps) as progress_bar:
@@ -1189,7 +1197,7 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
                 latents_remain = latents[:, window_size + 1 :]
                 latents_cond_new = latents_pop[:, -1].unsqueeze(1)
                 latents_new = torch.cat(
-                    [latents_cond_new, latents_remain, torch.randn_like(latents_pop)],
+                    [latents_cond_new, latents_remain, randn_like(latents_pop, generator)],
                     dim=1,
                 )  # append noisy video token to the right of the video sequence
                 latents_pop_stream.append(latents_pop)
@@ -1197,7 +1205,7 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
             else:
                 latents_pop = latents[:, :window_size]
                 latents_remain = latents[:, window_size:]
-                latents_new = torch.cat([latents_remain, torch.randn_like(latents_pop)], dim=1)
+                latents_new = torch.cat([latents_remain, randn_like(latents_pop, generator)], dim=1)
                 latents_pop_stream.append(latents_pop)
                 latents = latents_new
 
