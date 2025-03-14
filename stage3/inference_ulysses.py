@@ -35,6 +35,7 @@ from diffusers.utils import export_to_video
 import os
 import sys
 sys.path.insert(0, '/'.join(os.path.realpath(__file__).split('/')[:-2]))
+import torch
 from stage3.cogvideox.pipelines import CogVideoXStreamingPipeline
 from stage3.cogvideox.transformer import CogVideoXTransformer3DModel
 from stage3.cogvideox.scheduler import CogVideoXSwinDPMScheduler
@@ -42,6 +43,34 @@ from stage3.cogvideox.xfuser.attention_processor import (
     xFuserCogVideoXAttnProcessor2_0,
     xFuserCogVideoXControlAttnProcessor2_0
 )
+from diffusers.utils import export_to_video, load_image, load_video
+
+import decord
+import PIL.Image
+
+from torchao.quantization import quantize_, int8_weight_only, float8_weight_only
+
+import torch.nn.functional as F
+
+def quantize_model(part, quantization_scheme):
+    print(f'====== Using {quantization_scheme} quantized model for streaming ======')
+    if quantization_scheme == "int8":
+        quantize_(part, int8_weight_only())
+    elif quantization_scheme == "fp8":
+        quantize_(part, float8_weight_only())
+    return part
+
+def enable_sage_attn(attn_type):
+    from sageattention import sageattn
+    print(f'====== Using {attn_type} attention for streaming ======')
+    if attn_type == 'sage':
+        F.scaled_dot_product_attention = sageattn
+    elif attn_type == 'fa3':
+        from sageattention.fa3_wrapper import fa3
+        F.scaled_dot_product_attention = fa3
+    elif attn_type == 'fa3_fp8':
+        from sageattention.fa3_wrapper import fa3_fp8
+        F.scaled_dot_product_attention = fa3_fp8
 
 def generate_random_control_signal(
         length, seed, repeat_lens=[2, 2, 2], signal_choices=['D', 'DR', 'DL'],
@@ -160,14 +189,15 @@ def generate_video(
     - seed (int): The seed for reproducibility.
     - fps (int): The frames per second for the generated video.
     """
+    # enable_sage_attn('sage')
     # Init_video should be pillow list.
     video_reader = decord.VideoReader(image_or_video_path)
-    video_num_frames = len(video_reader)
-    video_fps = video_reader.get_avg_fps()
-    sampling_interval = video_fps/fps
+    video_num_frames = len(video_reader)  # 65
+    video_fps = video_reader.get_avg_fps()  # 16
+    sampling_interval = video_fps/fps  # 1
     frame_indices = np.round(np.arange(0, video_num_frames, sampling_interval)).astype(int).tolist()
-    frame_indices = frame_indices[:init_video_clip_frame]
-    video = video_reader.get_batch(frame_indices).asnumpy()
+    frame_indices = frame_indices[:init_video_clip_frame]  # init_video_clip_frame = 17
+    video = video_reader.get_batch(frame_indices).asnumpy()  # (17, 480, 720, 3)
     video = [PIL.Image.fromarray(frame) for frame in video]
     if sampling_interval > 1:
         control_signal_list = control_signal.split(",")
@@ -175,7 +205,7 @@ def generate_video(
         control_signal = ",".join(control_signal_list)
 
     # 4. Generate the video frames based on the prompt.
-    num_frames = len(video)
+    num_frames = len(video)  # 17
     print(f"{len(video)=}")
     
     # Pad control signal for new frames generation and [the redundancy used by the last window]
@@ -190,7 +220,7 @@ def generate_video(
         )
     print(f"Control signal: {control_signal}, {len(control_signal.split(','))=}")
     with torch.no_grad():
-        video_generate = pipe(
+        video_generate = pipe(  # , time_info   # CogVideoXStreamingPipeline
             prompt=prompt,
             num_videos_per_prompt=num_videos_per_prompt,
             num_inference_steps=num_inference_steps,
@@ -277,7 +307,7 @@ def main():
     assert engine_config.runtime_config.use_torch_compile is False, "`use_torch_compile` is not supported yet."
 
     dtype = torch.float16 if args.dtype == "float16" else torch.bfloat16
-    pipe = init_pipeline(
+    pipe = init_pipeline(  # stage3.cogvideox.pipelines.pipeline_cogvideox.CogVideoXStreamingPipeline
         model_path=args.model_path,
         transformer_path=args.transformer_path,
         local_rank=local_rank,
@@ -292,13 +322,13 @@ def main():
     
     parameter_peak_memory = torch.cuda.max_memory_allocated(device=f"cuda:{local_rank}")
 
-    initialize_runtime_state(pipe, engine_config)
-    split_text_embed_in_sp = {
+    initialize_runtime_state(pipe, engine_config)  # set up `xfuser.core.distributed.runtime_state.DiTRuntimeState`
+    split_text_embed_in_sp = {  # True
         "true": True,
         "false": False,
         "auto": None,
     }[args.split_text_embed_in_sp]
-    get_runtime_state().set_video_input_parameters(
+    get_runtime_state().set_video_input_parameters(  # get_runtime_state returns a `xfuser.core.distributed.runtime_state.DiTRuntimeState`
         height=input_config.height,
         width=input_config.width,
         num_frames=input_config.num_frames,
@@ -308,18 +338,18 @@ def main():
     )
     
     # if engine_config.runtime_config.use_torch_compile:
-    #     torch._inductor.config.reorder_for_compute_comm_overlap = True
-    #     pipe.transformer = torch.compile(pipe.transformer, mode="max-autotune-no-cudagraphs")
+    # torch._inductor.config.reorder_for_compute_comm_overlap = True
+    pipe.transformer = torch.compile(pipe.transformer, mode="max-autotune-no-cudagraphs")
 
-    #     # one step to warmup the torch compiler
-    #     output = pipe(
-    #         height=input_config.height,
-    #         width=input_config.width,
-    #         num_frames=input_config.num_frames,
-    #         prompt=input_config.prompt,
-    #         num_inference_steps=1,
-    #         generator=torch.Generator(device="cuda").manual_seed(input_config.seed),
-    #     ).frames[0]
+    # # one step to warmup the torch compiler
+    # output = pipe(
+    #     height=input_config.height,
+    #     width=input_config.width,
+    #     num_frames=input_config.num_frames,
+    #     prompt=input_config.prompt,
+    #     num_inference_steps=1,
+    #     generator=torch.Generator(device="cuda").manual_seed(input_config.seed),
+    # ).frames[0]
 
     torch.cuda.reset_peak_memory_stats()
 
@@ -348,11 +378,16 @@ def main():
     end_time = time.time()
     elapsed_time = end_time - start_time
     peak_memory = torch.cuda.max_memory_allocated(device=f"cuda:{local_rank}")
+    torch.cuda.reset_peak_memory_stats()
 
     if is_dp_last_group():
         with torch.no_grad():
+            vae_start_time = time.time()
             output = pipe.decode_latents(output, sliced_decode=True)
             output = pipe.video_processor.postprocess_video(video=output, output_type="pil")[0]
+            vae_end_time = time.time()
+            vae_elapsed_time = vae_end_time - vae_start_time
+            vae_peak_memory = torch.cuda.max_memory_allocated(device=f"cuda:{local_rank}")
 
         parallel_info = (
             f"dp{engine_args.data_parallel_degree}_cfg{engine_config.parallel_config.cfg_degree}_"
@@ -368,7 +403,7 @@ def main():
         print(f"output saved to {output_path}")
 
     if get_world_group().rank == get_world_group().world_size - 1:
-        print(f"epoch time: {elapsed_time:.2f} sec, parameter memory: {parameter_peak_memory/1e9:.2f} GB, memory: {peak_memory/1e9} GB")
+        print(f"DiT time: {elapsed_time:.2f} sec, VAE time: {vae_elapsed_time}, parameter memory: {parameter_peak_memory/1e9:.2f} GB, DiT memory: {peak_memory/1e9} GB, VAE memory: {vae_peak_memory/1e9} GB")
     get_runtime_state().destory_distributed_env()
 
 

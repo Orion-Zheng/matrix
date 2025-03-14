@@ -43,6 +43,28 @@ from transformers import AutoTokenizer, CLIPModel
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
+# ============================
+import gc
+import time
+from PIL import Image
+from typing import Union
+import ray
+from xfuser import xFuserArgs
+from xfuser.config import FlexibleArgumentParser
+from xfuser.core.distributed import (
+    get_world_group,
+    get_runtime_state,
+    get_classifier_free_guidance_world_size,
+    get_classifier_free_guidance_rank,
+    get_cfg_group,
+    get_sequence_parallel_world_size,
+    get_sequence_parallel_rank,
+    get_sp_group,
+    is_dp_last_group,
+    initialize_runtime_state,
+    get_pipeline_parallel_world_size,
+)
+# ============================
 
 EXAMPLE_DOC_STRING = """
     Examples:
@@ -207,7 +229,11 @@ class CogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
         )
 
         self.video_processor = VideoProcessor(vae_scale_factor=self.vae_scale_factor_spatial)
-
+    
+    def print(self, *info):
+        # if self.rank == 0:
+        print(f"[RANK {self.rank}]: ", *info)
+            
     def _get_t5_prompt_embeds(
         self,
         prompt: Union[str, List[str]] = None,
@@ -813,6 +839,7 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
         transformer: CogVideoXTransformer3DModel,
         scheduler: Union[CogVideoXDPMScheduler, CogVideoXSwinDPMScheduler],
     ):
+        self.ray_vae = False
         super().__init__(
             tokenizer,
             text_encoder,
@@ -820,6 +847,18 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
             transformer,
             scheduler,
         )
+        self.rank = get_world_group().rank
+        self.set_up_control_embeddings()
+        if self.ray_vae:
+            self.init_ray_sender()
+
+    def init_ray_sender(self):
+        ray.init(address='auto')  # connect to ray cluster
+        self.queue_manager = ray.get_actor("latents_queue", namespace='vae_decoder')
+        
+    def send_latents_to_queue(self, latents):
+        assert hasattr(self, "queue_manager")
+        ray.get(self.queue_manager.put.remote(latents))
 
     def prepare_latents(
         self,
@@ -861,7 +900,7 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
             else:
                 video_latents = [retrieve_latents(self.vae.encode(vid.unsqueeze(0)), generator) for vid in init_video]
 
-            video_latents = torch.cat(video_latents, dim=0).to(dtype).permute(0, 2, 1, 3, 4)  # [B, F, C, H, W]
+            video_latents = torch.cat(video_latents, dim=0).to(dtype).permute(0, 2, 1, 3, 4)  # [B, F, C, H, W]  torch.Size([1, 5, 16, 60, 90])
             video_latents = self.vae_scaling_factor_image * video_latents
             if video_latents.size(1) < num_frames:
                 padding_shape = (
@@ -874,10 +913,10 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
                 latent_padding = torch.zeros(padding_shape, device=device, dtype=dtype)
                 init_latents = torch.cat([video_latents, latent_padding], dim=1)
             else:
-                init_latents = video_latents[:, :num_frames]
+                init_latents = video_latents[:, :num_frames]  # torch.Size([1, 5, 16, 60, 90])
 
-            # add grouped noise
-            noise = randn_tensor(shape, generator=generator, device=device, dtype=dtype)
+            # add grouped noise  timestep.shape: torch.Size([5]) e.g. tensor([  0, 249, 499, 749, 999], device='cuda:1')
+            noise = randn_tensor(shape, generator=generator, device=device, dtype=dtype)  # torch.Size([1, 5, 16, 60, 90])
             latents = self.scheduler.add_noise(init_latents, noise, timestep.unsqueeze(0).repeat(batch_size, 1))
         else:
             # add grouped noise
@@ -889,22 +928,30 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
         latents = latents * self.scheduler.init_noise_sigma
         return latents
     
+    def set_up_control_embeddings(self):
+        assert not hasattr(self, "control_embeddings")
+        clip_tokenizer = AutoTokenizer.from_pretrained("openai/clip-vit-large-patch14")
+        clip_model = CLIPModel.from_pretrained("openai/clip-vit-large-patch14")
+        clip_model.requires_grad_(False)
+        device = torch.device(f'cuda:{self.rank}')
+        clip_model.to(device, dtype=self.transformer.dtype)
+
+        control_prompts = list(CONTROL_SIGNAL_TO_PROMPT.values())
+        control_prompt_ids = clip_tokenizer(control_prompts, padding=True, return_tensors="pt")
+        control_prompt_ids.to(device)
+        self.control_embeddings = clip_model.get_text_features(**control_prompt_ids)
+        null_control_prompt_ids = clip_tokenizer([""], padding=True, return_tensors="pt")
+        null_control_prompt_ids.to(device)
+        self.null_control_embedding = clip_model.get_text_features(**null_control_prompt_ids)
+        self.control_signal_to_idx = {k: i for i, k in enumerate(CONTROL_SIGNAL_TO_PROMPT.keys())}
+        
+        # delete clip model after getting all control embeddings
+        del clip_model
+        gc.collect()
+        torch.cuda.empty_cache()
+            
     def get_control_from_signal(self, control_signal, start=None, end=None):
-        if not hasattr(self, "control_embeddings"):
-            clip_tokenizer = AutoTokenizer.from_pretrained("openai/clip-vit-large-patch14")
-            clip_model = CLIPModel.from_pretrained("openai/clip-vit-large-patch14")
-            clip_model.requires_grad_(False)
-            clip_model.to(self._execution_device, dtype=self.transformer.dtype)
-
-            control_prompts = list(CONTROL_SIGNAL_TO_PROMPT.values())
-            control_prompt_ids = clip_tokenizer(control_prompts, padding=True, return_tensors="pt")
-            control_prompt_ids.to(self._execution_device)
-            self.control_embeddings = clip_model.get_text_features(**control_prompt_ids)
-            null_control_prompt_ids = clip_tokenizer([""], padding=True, return_tensors="pt")
-            null_control_prompt_ids.to(self._execution_device)
-            self.null_control_embedding = clip_model.get_text_features(**null_control_prompt_ids)
-            self.control_signal_to_idx = {k: i for i, k in enumerate(CONTROL_SIGNAL_TO_PROMPT.keys())}
-
+        assert hasattr(self, "control_embeddings")
         control_signal_list = control_signal.split(",")
         if start is not None and end is not None:
             control_signal_list = control_signal_list[start: end]
@@ -981,12 +1028,12 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
         #     raise ValueError(
         #         "The number of frames must be less than 49 for now due to static positional embeddings. This will be updated in the future to remove this limitation."
         #     )
-        if with_frame_cond:
-            num_frames = (num_frames - 1) // self.vae_scale_factor_temporal + 1 if latents is None else latents.size(1)
+        if with_frame_cond:  # num_frames = 17
+            num_frames = (num_frames - 1) // self.vae_scale_factor_temporal + 1 if latents is None else latents.size(1)  # 5
             num_videos_per_prompt = 1
-            outer_steps = num_sample_groups
-            inner_steps = num_inference_steps // num_noise_groups
-            window_size = (num_frames - 1) // num_noise_groups
+            outer_steps = num_sample_groups  # 100
+            inner_steps = num_inference_steps // num_noise_groups  # 5
+            window_size = (num_frames - 1) // num_noise_groups  # 1
         else:
             num_frames = num_frames // self.vae_scale_factor_temporal if latents is None else latents.size(1)
             num_videos_per_prompt = 1
@@ -1006,11 +1053,11 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
             num_inference_steps % num_noise_groups == 0
         ), "total inference step number should be divisible by num_noise_groups"
             
-        # print(f"Total video tokens in the queue (F): {num_frames}")
-        # print(f"Noise group number (G): {num_noise_groups}")
-        # print(f"Window size (W): {window_size}")
-        # print(f"Num_sample_groups (S): {num_sample_groups}")
-        # print(f"Output frame number (S*W*4 + 1): {num_frames * num_noise_groups * 4 + 1}") 
+        # self.print(f"Total video tokens in the queue (F): {num_frames}")
+        # self.print(f"Noise group number (G): {num_noise_groups}")
+        # self.print(f"Window size (W): {window_size}")
+        # self.print(f"Num_sample_groups (S): {num_sample_groups}")
+        # self.print(f"Output frame number (S*W*4 + 1): {num_frames * num_noise_groups * 4 + 1}") 
 
         # 1. Check inputs. Raise error if not correct
         self.check_inputs(
@@ -1057,7 +1104,7 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
 
         # 4. Prepare timesteps
         timesteps, num_inference_steps = retrieve_timesteps(self.scheduler, num_inference_steps, device, timesteps)
-
+        # timesteps: tensor([999, 949, 899, 849, 799, 749, 699, 649, 599, 549, 499, 449, 399, 349, 299, 249, 199, 149,  99,  49], device='cuda:1')
         self._num_timesteps = len(timesteps)
 
         timesteps_grouped = expand_timesteps_with_group(
@@ -1067,29 +1114,34 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
             pad_cond_timesteps=with_frame_cond,
             pad_prev_timesteps=False,
         )  # [T//G , F'], where F'=W*G
+        # tensor([[  0, 249, 499, 749, 999],
+        #         [  0, 199, 449, 699, 949],
+        #         [  0, 149, 399, 649, 899],
+        #         [  0,  99, 349, 599, 849],
+        #         [  0,  49, 299, 549, 799]], device='cuda:1')  # shape (5, 5)
 
         # 5. Prepare latents.
         if latents is None:
-            init_video = self.video_processor.preprocess_video(init_video, height=height, width=width)
+            init_video = self.video_processor.preprocess_video(init_video, height=height, width=width)  # torch.Size([1, 3, 17, 480, 720])
             init_video = init_video.to(device=device, dtype=prompt_embeds.dtype)
             latents = None
         else:
             init_video = None
             latents = latents.to(device, dtype=prompt_embeds.dtype)
         
-        latent_channels = self.transformer.config.in_channels
-        latents = self.prepare_latents(
-            init_video,
+        latent_channels = self.transformer.config.in_channels  # 16
+        latents = self.prepare_latents(  # encode base video into latents
+            init_video,  # torch.Size([1, 3, 17, 480, 720])
             batch_size * num_videos_per_prompt,
-            latent_channels,
-            num_frames,
-            height,
-            width,
-            prompt_embeds.dtype,
+            latent_channels,  # 16
+            num_frames,  # 5
+            height,  # 280
+            width,  # 720
+            prompt_embeds.dtype,  # bfloat16
             device,
             generator,
-            latents,
-            timesteps_grouped[0],
+            latents,  # None
+            timesteps_grouped[0],  # tensor([  0, 249, 499, 749, 999],
         )
         # 6. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
@@ -1097,7 +1149,7 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
         # 7. Create rotary embeds if required
         image_rotary_emb = (
             self._prepare_rotary_positional_embeddings(height, width, latents.size(1), device)
-            if self.transformer.config.use_rotary_positional_embeddings
+            if self.transformer.config.use_rotary_positional_embeddings  # False
             else None
         )
 
@@ -1105,28 +1157,27 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
         num_warmup_steps = 0
 
         # Control signal
-        control_start = 0 if with_frame_cond else 1
-        _ = self.get_control_from_signal(list(CONTROL_SIGNAL_TO_PROMPT.keys())[0], control_start, control_start+num_frames) # warm-up
-
-        print("Starting streaming video prediction...")
+        control_start = 0 if with_frame_cond else 1  # start from the first frame if with frame condition
+        streaming_time_info = {}
+        self.print("Starting streaming video prediction...")
         latents_pop_stream = []
         for group_idx in range(outer_steps):
-            print(f"Computing the {group_idx + 1}th/{num_sample_groups} group of video tokens...")
-
+            self.print(f"Computing the {group_idx + 1}th/{num_sample_groups} group of video tokens...")
+            # Each sample group is 1 s video in this case. (num_sample_groups = length // (TRAINING_BASE_VIDEO_MAX_LENGTH=4 // TRAINING_NOISE_GROUP=4))
             # Control signal
-            control_emb = self.get_control_from_signal(control_signal, control_start, control_start+num_frames)
+            control_emb = self.get_control_from_signal(control_signal, control_start, control_start+num_frames)  # e.g. if num_frames = 17 --> control_emb.shape: torch.Size([17, 768])
             control_emb = control_emb.unsqueeze(0).to(prompt_embeds.dtype).contiguous()
             if do_classifier_free_guidance:
                 control_emb = torch.cat([control_emb] * 2)
             control_start += window_size
-
-            with self.progress_bar(total=inner_steps) as progress_bar:
+            dit_start_time = time.time()
+            with self.progress_bar(total=inner_steps) as progress_bar:  # inner_steps = num_inference_steps // num_noise_groups
                 # for DPM-solver++
                 old_pred_original_sample = None
                 for i in range(inner_steps):
                     if self.interrupt:
                         continue
-                    # [B, F', 1, 1, 1]
+                    # [B, F', 1, 1, 1]  e.g. F'=17 = 1 + 16
                     timesteps = timesteps_grouped[i : i + 1].repeat(batch_size, 1)[..., None, None, None]
 
                     if i > 0:
@@ -1134,7 +1185,7 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
                         timesteps_back = timesteps_grouped[i - 1 : i].repeat(batch_size, 1)[..., None, None, None]
                     else:
                         timesteps_back = None
-
+                    # latent shape: [B, F', C, H, W] e.g. shape: torch.Size([1, 5, 16, 60, 90]) if do_classifier_free_guidance is False; shape: torch.Size([2, 5, 16, 60, 90])
                     latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
                     # latent_model_input = self.scheduler.scale_model_input(
                     #     latent_model_input, t
@@ -1150,7 +1201,7 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
                         return_dict=False,
                         control_emb=control_emb,
                     )[0]
-                    noise_pred = noise_pred.float()
+                    noise_pred = noise_pred.float()  # torch.Size([1 (if cfg_guidance, =2), 5 (num_frames), 16(channels), 60, 90])
 
                     # perform guidance
                     # issue with strange logic: https://github.com/huggingface/diffusers/issues/9641
@@ -1159,14 +1210,14 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
                     #         (1 - math.cos(math.pi * ((num_inference_steps - t.item()) / num_inference_steps) ** 5.0)) / 2
                     #     )
                     if do_classifier_free_guidance:
-                        noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-                        noise_pred = noise_pred_uncond + self.guidance_scale * (noise_pred_text - noise_pred_uncond)
+                        noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)  # e.g. (2, 17, 16, 60, 90) --> (1, 17, 16, 60, 90), (1, 17, 16, 60, 90)
+                        noise_pred = noise_pred_uncond + self.guidance_scale * (noise_pred_text - noise_pred_uncond)  # e.g. (1, 17, 16, 60, 90)
 
                     # compute the previous noisy sample x_t -> x_t-1
                     if with_frame_cond:
-                        latents_cond = latents[:, :1]
+                        latents_cond = latents[:, :1]  # e.g. torch.Size([1, 17, 16, 60, 90]) --> torch.Size([1, 1, 16, 60, 90])
 
-                        latents, old_pred_original_sample = self.scheduler.step(
+                        latents, old_pred_original_sample = self.scheduler.step(  # e.g. torch.Size([1, 16, 16, 60, 90])
                             noise_pred[:,1:],
                             old_pred_original_sample,
                             timesteps[:,1:],
@@ -1191,7 +1242,9 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
 
                     if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
                         progress_bar.update()
-
+            dit_end_time = time.time()
+            streaming_time_info[f"Group_{group_idx}"] = (dit_end_time - dit_start_time)  # unit: second
+            self.print(f"Group_{group_idx} time: {dit_end_time - dit_start_time}")
             if with_frame_cond:
                 latents_pop = latents[:, 1 : window_size + 1]
                 latents_remain = latents[:, window_size + 1 :]
@@ -1200,22 +1253,31 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
                     [latents_cond_new, latents_remain, randn_like(latents_pop, generator)],
                     dim=1,
                 )  # append noisy video token to the right of the video sequence
-                latents_pop_stream.append(latents_pop)
+                if self.ray_vae:
+                    self.send_latents_to_queue(latents_pop.to('cpu'))
+                else:
+                    latents_pop_stream.append(latents_pop)
                 latents = latents_new
             else:
                 latents_pop = latents[:, :window_size]
                 latents_remain = latents[:, window_size:]
                 latents_new = torch.cat([latents_remain, randn_like(latents_pop, generator)], dim=1)
-                latents_pop_stream.append(latents_pop)
+                if self.ray_vae:
+                    latents_pop_stream.append(latents_pop)
+                else:
+                    latents_pop_stream.append(latents_pop)
                 latents = latents_new
+        self.print('Average seconds per group: ', np.mean(list(streaming_time_info.values())[1:]), 'var: ', np.var(list(streaming_time_info.values())[1:]))  # discard first one because the latency is usually high
+        if latents_pop_stream:
+            latents_out = torch.cat(latents_pop_stream, dim=1,)
 
-        latents_out = torch.cat(latents_pop_stream, dim=1,)
-
-        if not output_type == "latent":
-            video = self.decode_latents(latents_out, sliced_decode=True)
-            video = self.video_processor.postprocess_video(video=video, output_type=output_type)
+            if not output_type == "latent":
+                video = self.decode_latents(latents_out, sliced_decode=True)
+                video = self.video_processor.postprocess_video(video=video, output_type=output_type)
+            else:
+                video = latents_out
         else:
-            video = latents_out
+            return None
 
         # Offload all models
         self.maybe_free_model_hooks()

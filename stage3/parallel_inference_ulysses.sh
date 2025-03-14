@@ -3,13 +3,15 @@
 set -x
 
 export PYTHONPATH=$PWD:$PYTHONPATH
-
+echo $PYTHONPATH
+# export HF_HOME="/mnt/world_model/longxiang/.cache/huggingface"
+export PROMPT="The video shows a white car driving on a country road on a sunny day. The car comes from the back of the scene, moving forward along the road, with open fields and distant hills surrounding it. As the car moves, the vegetation on both sides of the road and distant buildings can be seen. The entire video records the car's journey through the natural environment using a follow-shot technique."
 # Output folder
-OUTDIR="./output/ulysses"
+OUTDIR="/workspace/matrix/samples/ulysses"
 mkdir -p $OUTDIR
 
 # CogVideoX configuration
-SCRIPT="inference_ulysses.py"
+SCRIPT="/workspace/matrix/stage3/inference_ulysses.py"
 
 # CogVideoX specific task args
 TASK_ARGS="--height 480 --width 720" # 480 : 720 = 3 : 4
@@ -17,8 +19,8 @@ CFG_SCALE=1
 SEED=43
 
 # CogVideoX parallel configuration
-N_GPUS=3
-PARALLEL_ARGS="--ulysses_degree 3 --ring_degree 1"
+N_GPUS=2
+PARALLEL_ARGS="--ulysses_degree 2 --ring_degree 1"
 # CFG_ARGS="--use_cfg_parallel"
 SPLIT_TEXT_EMBED_IN_SP="true"
 
@@ -39,11 +41,12 @@ export NCCL_MAX_NCHANNELS=64
 ENABLE_TILING="--enable_tiling"
 # COMPILE_FLAG="--use_torch_compile"
 
-torchrun --nproc_per_node=$N_GPUS ./$SCRIPT \
---model_path MODEL_PATH \
+torchrun --nproc_per_node=$N_GPUS $SCRIPT \
+--model_path "/matrix_ckpts/stage2" \
+--transformer_path "/matrix_ckpts/stage3/transformer" \
 --output_path "${OUTDIR}/output_seed${SEED}_cfgscale${CFG_SCALE}_splitText-${SPLIT_TEXT_EMBED_IN_SP}.mp4" \
---prompt "The video shows a white car driving on a country road on a sunny day. The car comes from the back of the scene, moving forward along the road, with open fields and distant hills surrounding it. As the car moves, the vegetation on both sides of the road and distant buildings can be seen. The entire video records the car's journey through the natural environment using a follow-shot technique." \
---image_or_video_path VIDEO_PATH \
+--prompt "${PROMPT}" \
+--image_or_video_path /workspace/matrix/samples/base_video.mp4 \
 --control_signal D,D,D,D,DL,DL,DL,DL,DL,DL,D,D,D,D,D,D,D \
 --guidance_scale $CFG_SCALE \
 --seed $SEED \

@@ -1,0 +1,6 @@
+[submodule "xDiT"]
+	path = xDiT
+	url = git@github.com:Orion-Zheng/xDiT.git
+[submodule "Practical_RIFE"]
+	path = Practical_RIFE
+	url = git@github.com:Orion-Zheng/Practical-RIFE.git

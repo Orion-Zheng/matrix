@@ -19,6 +19,19 @@ from xfuser.core.distributed import (
     get_ulysses_parallel_rank,
 )
 
+def enable_sage_attn(attn_type):
+    from sageattention import sageattn
+    print(f'====== Using {attn_type} attention for streaming ======')
+    if attn_type == 'sage':
+        F.scaled_dot_product_attention = sageattn
+    elif attn_type == 'fa3':
+        from sageattention.fa3_wrapper import fa3
+        F.scaled_dot_product_attention = fa3
+    elif attn_type == 'fa3_fp8':
+        from sageattention.fa3_wrapper import fa3_fp8
+        F.scaled_dot_product_attention = fa3_fp8
+enable_sage_attn('sage')  
+
 def ring_attn(query, key, value, dropout_p=0.0, is_causal=False):
     out, *_ = _templated_ring_attention(
         PROCESS_GROUP.RING_PG,
@@ -198,7 +211,7 @@ def custom_USP(
         assert value.shape[2] == n
 
         if get_ring_parallel_world_size() == 1:
-            out = F.scaled_dot_product_attention(
+            out = F.scaled_dot_product_attention(  # this can be replaced by Sage Attention
                 query, key, value, dropout_p=dropout_p, is_causal=is_causal
             )
         else:
