@@ -1,5 +1,5 @@
 #!/bin/bash
-
+# bash concat_videos.sh /workspace/matrix/samples/decoupled_vae_output ./
 # Check if correct number of arguments is provided
 if [ "$#" -ne 2 ]; then
     echo "Usage: $0 <video_directory> <output_directory>"

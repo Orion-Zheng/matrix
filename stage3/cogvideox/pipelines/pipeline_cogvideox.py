@@ -231,8 +231,8 @@ class CogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
         self.video_processor = VideoProcessor(vae_scale_factor=self.vae_scale_factor_spatial)
     
     def print(self, *info):
-        # if self.rank == 0:
-        print(f"[RANK {self.rank}]: ", *info)
+        if self.rank == 0:
+            print(f"[RANK {self.rank}]: ", *info)
             
     def _get_t5_prompt_embeds(
         self,
@@ -839,7 +839,7 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
         transformer: CogVideoXTransformer3DModel,
         scheduler: Union[CogVideoXDPMScheduler, CogVideoXSwinDPMScheduler],
     ):
-        self.ray_vae = False
+        self.ray_vae = True
         super().__init__(
             tokenizer,
             text_encoder,
@@ -1053,11 +1053,11 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
             num_inference_steps % num_noise_groups == 0
         ), "total inference step number should be divisible by num_noise_groups"
             
-        # self.print(f"Total video tokens in the queue (F): {num_frames}")
-        # self.print(f"Noise group number (G): {num_noise_groups}")
-        # self.print(f"Window size (W): {window_size}")
-        # self.print(f"Num_sample_groups (S): {num_sample_groups}")
-        # self.print(f"Output frame number (S*W*4 + 1): {num_frames * num_noise_groups * 4 + 1}") 
+        self.print(f"Total video tokens in the queue (F): {num_frames}")
+        self.print(f"Noise group number (G): {num_noise_groups}")
+        self.print(f"Window size (W): {window_size}")
+        self.print(f"Num_sample_groups (S): {num_sample_groups}")
+        self.print(f"Output frame number (S*W*4 + 1): {num_frames * num_noise_groups * 4 + 1}") 
 
         # 1. Check inputs. Raise error if not correct
         self.check_inputs(
@@ -1263,7 +1263,7 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
                 latents_remain = latents[:, window_size:]
                 latents_new = torch.cat([latents_remain, randn_like(latents_pop, generator)], dim=1)
                 if self.ray_vae:
-                    latents_pop_stream.append(latents_pop)
+                    self.send_latents_to_queue(latents_pop.to('cpu'))
                 else:
                     latents_pop_stream.append(latents_pop)
                 latents = latents_new

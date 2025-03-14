@@ -130,7 +130,7 @@ def generate_video(
 
     pipe = CogVideoXStreamingPipeline.from_pretrained(model_path, transformer=transformer, scheduler=scheduler, torch_dtype=dtype)
     pipe.vae.to("cpu")  # move vae to cpu when we decouple the vae to a separate gpu
-    pipe.transformer = torch.compile(pipe.transformer, mode="max-autotune-no-cudagraphs")
+    # pipe.transformer = torch.compile(pipe.transformer, mode="max-autotune-no-cudagraphs")
     # pipe.transformer = torch.compile(pipe.transformer, mode="max-autotune", fullgraph=True)  # raise error
     # pipe.scheduler, pipe.transformer, pip.vae, pipe.vae.transformer, pipe.vae.transformer.transformer
     

@@ -1045,11 +1045,11 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
             num_inference_steps % num_noise_groups == 0
         ), "total inference step number should be divisible by num_noise_groups"
             
-        # print(f"Total video tokens in the queue (F): {num_frames}")
-        # print(f"Noise group number (G): {num_noise_groups}")
-        # print(f"Window size (W): {window_size}")
-        # print(f"Num_sample_groups (S): {num_sample_groups}")
-        # print(f"Output frame number (S*W*4 + 1): {num_frames * num_noise_groups * 4 + 1}") 
+        print(f"Total video tokens in the queue (F): {num_frames}")
+        print(f"Noise group number (G): {num_noise_groups}")
+        print(f"Window size (W): {window_size}")
+        print(f"Num_sample_groups (S): {num_sample_groups}")
+        print(f"Output frame number (S*W*4 + 1): {num_frames * num_noise_groups * 4 + 1}") 
 
         # 1. Check inputs. Raise error if not correct
         self.check_inputs(

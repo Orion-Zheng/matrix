@@ -19,8 +19,8 @@ CFG_SCALE=1
 SEED=43
 
 # CogVideoX parallel configuration
-N_GPUS=2
-PARALLEL_ARGS="--ulysses_degree 2 --ring_degree 1"
+N_GPUS=6
+PARALLEL_ARGS="--ulysses_degree $N_GPUS --ring_degree 1"
 # CFG_ARGS="--use_cfg_parallel"
 SPLIT_TEXT_EMBED_IN_SP="true"
 

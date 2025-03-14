@@ -7,8 +7,6 @@ from stage3.cogvideox.autoencoder import AutoencoderKLCogVideoX
 from diffusers.utils import export_to_video, load_image, load_video
 from diffusers.video_processor import VideoProcessor
 
-from post_processors.SuperRes_ESRGAN import ESRGANUpscaler
-from post_processors.Interpolator_RIFE import RIFEInterpolator
 
 @ray.remote(num_cpus=1, max_concurrency=2)
 class QueueManager:
@@ -31,8 +29,9 @@ class QueueManager:
 class LatentDecoder:
     def __init__(self, vae_ckpt_path: str, output_dir: str, 
                  fps=16,
-                 super_resolution=True, 
-                 frame_interpolation='/workspace/matrix/Practical_RIFE/train_log'):
+                 super_resolution=False, 
+                 frame_interpolation=False):
+        frame_interpolation_path = '/workspace/matrix/Practical_RIFE/train_log'
         self.fps = fps
         self.do_super_resolution = super_resolution
         self.do_frame_interpolation = frame_interpolation
@@ -52,16 +51,18 @@ class LatentDecoder:
         
         self.latents = []
         self.last_frame = None
-        
-        self.sr_upscaler = ESRGANUpscaler(model_scale="2")
-        self.sr_upscaler.model.model.eval()
-        self.sr_upscaler.model.model.requires_grad_(False)
-        self.sr_upscaler.model.model = torch.compile(self.sr_upscaler.model.model, mode="max-autotune-no-cudagraphs")
-
-        self.frame_interpolator = RIFEInterpolator(model_path=frame_interpolation)
-        self.frame_interpolator.model.flownet.requires_grad_(False)
-        self.frame_interpolator.model.flownet.eval()
-        self.frame_interpolator.model.flownet = torch.compile(self.frame_interpolator.model.flownet, mode="max-autotune-no-cudagraphs")
+        if self.do_super_resolution:
+            from post_processors.SuperRes_ESRGAN import ESRGANUpscaler
+            self.sr_upscaler = ESRGANUpscaler(model_scale="2")
+            self.sr_upscaler.model.model.eval()
+            self.sr_upscaler.model.model.requires_grad_(False)
+            self.sr_upscaler.model.model = torch.compile(self.sr_upscaler.model.model, mode="max-autotune-no-cudagraphs")
+        if self.do_frame_interpolation:
+            from post_processors.Interpolator_RIFE import RIFEInterpolator
+            self.frame_interpolator = RIFEInterpolator(model_path=frame_interpolation)
+            self.frame_interpolator.model.flownet.requires_grad_(False)
+            self.frame_interpolator.model.flownet.eval()
+            self.frame_interpolator.model.flownet = torch.compile(self.frame_interpolator.model.flownet, mode="max-autotune-no-cudagraphs")
         
     @torch.no_grad()
     def frames_to_video(frames: torch.Tensor, output_path: str, video_processor, fps: int = 16, save=True):
