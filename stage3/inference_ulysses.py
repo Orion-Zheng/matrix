@@ -114,6 +114,7 @@ def init_pipeline(
     enable_model_cpu_offload: bool = False,
     enable_tiling: bool = True,
     enable_slicing: bool = True,
+    decouple_vae: bool = False
 ):
     transformer = CogVideoXTransformer3DModel.from_pretrained(
         transformer_path or os.path.join(model_path, "transformer"),
@@ -122,7 +123,7 @@ def init_pipeline(
     )
     scheduler = CogVideoXSwinDPMScheduler.from_config(os.path.join(model_path, "scheduler"), timestep_spacing="trailing")
     pipe = CogVideoXStreamingPipeline.from_pretrained(model_path, transformer=transformer, scheduler=scheduler, torch_dtype=dtype)
-
+    pipe.ray_vae = decouple_vae
     # If you're using with lora, add this code
     if lora_path:
         pipe.load_lora_weights(lora_path, weight_name="pytorch_lora_weights.safetensors")
@@ -298,6 +299,7 @@ def main():
     add_argument_overridable(parser, "--init_video_clip_frame", type=int, default=17, help="Frame number of init_video to be clipped, should be 4n+1")
     # parallel arguments
     add_argument_overridable(parser, "--split_text_embed_in_sp", type=str, default="true", choices=["true", "false", "auto"], help="Whether to split text embed `encoder_hidden_states` for sequence parallel.")
+    add_argument_overridable(parser, "--decouple_vae", type=str, default="false", choices=["true", "false"], help="Whether to use a decoupled vae decoder running on ray.")
     args = parser.parse_args()
     engine_args = xFuserArgs.from_cli_args(args)
 
@@ -309,6 +311,11 @@ def main():
     assert engine_config.runtime_config.use_torch_compile is False, "`use_torch_compile` is not supported yet."
 
     dtype = torch.float16 if args.dtype == "float16" else torch.bfloat16
+    decouple_vae = {  # True
+        "true": True,
+        "false": False,
+        "auto": None,
+    }[args.decouple_vae]
     pipe = init_pipeline(  # stage3.cogvideox.pipelines.pipeline_cogvideox.CogVideoXStreamingPipeline
         model_path=args.model_path,
         transformer_path=args.transformer_path,
@@ -320,6 +327,7 @@ def main():
         enable_model_cpu_offload=args.enable_model_cpu_offload,
         enable_tiling=args.enable_tiling,
         enable_slicing=args.enable_slicing,
+        decouple_vae=decouple_vae
     )
     
     parameter_peak_memory = torch.cuda.max_memory_allocated(device=f"cuda:{local_rank}")
@@ -381,28 +389,28 @@ def main():
     elapsed_time = end_time - start_time
     peak_memory = torch.cuda.max_memory_allocated(device=f"cuda:{local_rank}")
     torch.cuda.reset_peak_memory_stats()
+    if output is not None:
+        if is_dp_last_group():
+            with torch.no_grad():
+                vae_start_time = time.time()
+                output = pipe.decode_latents(output, sliced_decode=True)
+                output = pipe.video_processor.postprocess_video(video=output, output_type="pil")[0]
+                vae_end_time = time.time()
+                vae_elapsed_time = vae_end_time - vae_start_time
+                vae_peak_memory = torch.cuda.max_memory_allocated(device=f"cuda:{local_rank}")
 
-    if is_dp_last_group():
-        with torch.no_grad():
-            vae_start_time = time.time()
-            output = pipe.decode_latents(output, sliced_decode=True)
-            output = pipe.video_processor.postprocess_video(video=output, output_type="pil")[0]
-            vae_end_time = time.time()
-            vae_elapsed_time = vae_end_time - vae_start_time
-            vae_peak_memory = torch.cuda.max_memory_allocated(device=f"cuda:{local_rank}")
+            parallel_info = (
+                f"dp{engine_args.data_parallel_degree}_cfg{engine_config.parallel_config.cfg_degree}_"
+                f"ulysses{engine_args.ulysses_degree}_ring{engine_args.ring_degree}_"
+                f"tp{engine_args.tensor_parallel_degree}_"
+                f"pp{engine_args.pipefusion_parallel_degree}_patch{engine_args.num_pipeline_patch}"
+            )
+            resolution = f"{input_config.width}x{input_config.height}"
 
-        parallel_info = (
-            f"dp{engine_args.data_parallel_degree}_cfg{engine_config.parallel_config.cfg_degree}_"
-            f"ulysses{engine_args.ulysses_degree}_ring{engine_args.ring_degree}_"
-            f"tp{engine_args.tensor_parallel_degree}_"
-            f"pp{engine_args.pipefusion_parallel_degree}_patch{engine_args.num_pipeline_patch}"
-        )
-        resolution = f"{input_config.width}x{input_config.height}"
-
-        filename, ext = os.path.splitext(args.output_path)
-        output_path = filename + f"_{parallel_info}_{resolution}" + ext
-        export_to_video(output, output_path, fps=args.fps)
-        print(f"output saved to {output_path}")
+            filename, ext = os.path.splitext(args.output_path)
+            output_path = filename + f"_{parallel_info}_{resolution}" + ext
+            export_to_video(output, output_path, fps=args.fps)
+            print(f"output saved to {output_path}")
 
     if get_world_group().rank == get_world_group().world_size - 1:
         print(f"DiT time: {elapsed_time:.2f} sec, VAE time: {vae_elapsed_time}, parameter memory: {parameter_peak_memory/1e9:.2f} GB, DiT memory: {peak_memory/1e9} GB, VAE memory: {vae_peak_memory/1e9} GB")

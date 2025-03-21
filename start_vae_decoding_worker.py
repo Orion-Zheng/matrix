@@ -7,6 +7,17 @@ from stage3.cogvideox.autoencoder import AutoencoderKLCogVideoX
 from diffusers.utils import export_to_video, load_image, load_video
 from diffusers.video_processor import VideoProcessor
 
+from contextlib import contextmanager
+import time
+
+@contextmanager
+def timer(label="Block"):
+    start_time = time.perf_counter()
+    yield
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()  # Ensures all CUDA operations are completed before measuring time
+    end_time = time.perf_counter()
+    print(f"{label} took {end_time - start_time:.6f} seconds")
 
 @ray.remote(num_cpus=1, max_concurrency=2)
 class QueueManager:
@@ -44,6 +55,7 @@ class LatentDecoder:
         self.vae.requires_grad_(False)
         self.vae.eval()
         self.vae = torch.compile(self.vae, mode="max-autotune-no-cudagraphs")
+        # self.vae.enable_tiling()
         
         self.vae_scale_factor_spatial =  2 ** (len(self.vae.config.block_out_channels) - 1)
         self.vae_scaling_factor_image = self.vae.config.scaling_factor
@@ -124,42 +136,38 @@ class LatentDecoder:
         while True:
             latent = ray.get(self.queue.get.remote())
             print(f"[Consumer] Received and processing: {latent.shape}")
-            decode_start = time.time()
+            
             self.latents.append(latent)
             self.latents = self.latents[-2:]
             if len(self.latents) < 2:
                 print(f"[Consumer] Not enough latents to decode")
                 continue
-            latent = torch.cat(self.latents, axis=1)
-            print(f"[Consumer] Concatenated: {latent.shape}")
-            frames = self.decode_latents(latent, sliced_decode=True)
-            frames = frames[:, :, 4:, :, :]
             
-            print(f"[Consumer] Processed: {frames.shape}")
-            video = self.video_processor.postprocess_video(frames, output_type="pil")
+            latent = torch.cat(self.latents, axis=1)
+            # print(f"[Consumer] Concatenated: {latent.shape}")
+            with timer("1.1 VAE Decoding Time: "):
+                frames = self.decode_latents(latent, sliced_decode=True)
+            frames = frames[:, :, 4:, :, :]
+            # print(f"[Consumer] Processed: {frames.shape}")
+            with timer("1.2 Postprocessing Time: "):
+                video = self.video_processor.postprocess_video(frames, output_type="pil")
             print('Decoded Video Len', len(video[0]))
-            decode_end = time.time()
-            print(f"1. Decoding time: {decode_end - decode_start}")
             assert len(video) == 1, "Only support one video to decode"
             video = video[0]
                 
-            # if self.do_frame_interpolation:
-            #     start_time = time.time()
-            #     if self.last_frame is not None:  # Interpolate between videos
-            #         video = [self.last_frame] + video
-            #         video = self.frame_interpolation(video)
-            #         video = video[1:]
-            #     else:
-            #         video = self.frame_interpolation(video)
-            #     self.last_frame = video[-1]
-            #     end_time = time.time()
-            #     print(f"2. Interpolation time: {end_time - start_time}")
+            if self.do_frame_interpolation:
+                with timer("2. Interpolation time: "):
+                    if self.last_frame is not None:  # Interpolate between videos
+                        video = [self.last_frame] + video
+                        video = self.frame_interpolation(video)
+                        video = video[1:]
+                    else:
+                        video = self.frame_interpolation(video)
+                    self.last_frame = video[-1]
             
-            # if self.do_super_resolution:
-            #     start_time = time.time()
-            #     video = self.super_resolution(video)
-            #     end_time = time.time()
-            #     print(f"3. Super resolution time: {end_time - start_time}")
+            if self.do_super_resolution:
+                with timer("3. Super resolution time: "):
+                    video = self.super_resolution(video)
             
             output_path = os.path.join(self.output_dir, f"test_{str(counter)}.mp4")
             export_to_video(video, output_path, fps=self.fps)
@@ -173,5 +181,8 @@ if __name__ == "__main__":
     ray.init(address='auto')  
     # Start the named queue manager
     queue = QueueManager.options(namespace='vae_decoder', name="latents_queue").remote()
-    consumer = LatentDecoder.remote(vae_ckpt_path, output_dir)
+    consumer = LatentDecoder.remote(vae_ckpt_path, output_dir, 
+                                    fps=16,
+                                    super_resolution=False, 
+                                    frame_interpolation=False)
     ray.get(consumer.process_data.remote())

@@ -64,6 +64,7 @@ from xfuser.core.distributed import (
     initialize_runtime_state,
     get_pipeline_parallel_world_size,
 )
+import torch.cuda.nvtx as nvtx
 # ============================
 
 EXAMPLE_DOC_STRING = """
@@ -839,7 +840,7 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
         transformer: CogVideoXTransformer3DModel,
         scheduler: Union[CogVideoXDPMScheduler, CogVideoXSwinDPMScheduler],
     ):
-        self.ray_vae = True
+        self.ray_vae = None
         super().__init__(
             tokenizer,
             text_encoder,
@@ -858,7 +859,8 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
         
     def send_latents_to_queue(self, latents):
         assert hasattr(self, "queue_manager")
-        ray.get(self.queue_manager.put.remote(latents))
+        if self.rank == 0:
+            ray.get(self.queue_manager.put.remote(latents))
 
     def prepare_latents(
         self,
@@ -1114,6 +1116,8 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
             pad_cond_timesteps=with_frame_cond,
             pad_prev_timesteps=False,
         )  # [T//G , F'], where F'=W*G
+        
+        print(timesteps_grouped)
         # tensor([[  0, 249, 499, 749, 999],
         #         [  0, 199, 449, 699, 949],
         #         [  0, 149, 399, 649, 899],
@@ -1171,6 +1175,7 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
                 control_emb = torch.cat([control_emb] * 2)
             control_start += window_size
             dit_start_time = time.time()
+            nvtx.range_push(f"Decoding of {group_idx}th latent")
             with self.progress_bar(total=inner_steps) as progress_bar:  # inner_steps = num_inference_steps // num_noise_groups
                 # for DPM-solver++
                 old_pred_original_sample = None
@@ -1190,7 +1195,7 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
                     # latent_model_input = self.scheduler.scale_model_input(
                     #     latent_model_input, t
                     # )
-
+                    
                     # predict noise model_output
                     noise_pred = self.transformer(
                         hidden_states=latent_model_input,
@@ -1202,7 +1207,7 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
                         control_emb=control_emb,
                     )[0]
                     noise_pred = noise_pred.float()  # torch.Size([1 (if cfg_guidance, =2), 5 (num_frames), 16(channels), 60, 90])
-
+                    
                     # perform guidance
                     # issue with strange logic: https://github.com/huggingface/diffusers/issues/9641
                     # if use_dynamic_cfg:
@@ -1242,6 +1247,8 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
 
                     if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
                         progress_bar.update()
+            torch.cuda.synchronize()
+            nvtx.range_pop()
             dit_end_time = time.time()
             streaming_time_info[f"Group_{group_idx}"] = (dit_end_time - dit_start_time)  # unit: second
             self.print(f"Group_{group_idx} time: {dit_end_time - dit_start_time}")

@@ -1,0 +1,1 @@
+nsys profile --trace=cuda,nvtx,osrt,openmp,mpi  --trace-fork-before-exec=true -o /workspace/matrix/nsight_result/dit_latent_2_h100x1 bash /workspace/matrix/parallel_inference_ulysses.sh

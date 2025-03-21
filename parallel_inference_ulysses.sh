@@ -19,19 +19,22 @@ CFG_SCALE=1
 SEED=43
 
 # CogVideoX parallel configuration
-N_GPUS=6
+N_GPUS=1
+# N_GPUS=1 #keke added
 PARALLEL_ARGS="--ulysses_degree $N_GPUS --ring_degree 1"
 # CFG_ARGS="--use_cfg_parallel"
 SPLIT_TEXT_EMBED_IN_SP="true"
 
-# export NCCL_MIN_NCHANNELS
+# ==== original config =====
 export NCCL_DEBUG=VERSION
-# unset NCCL_NSOCKS_PERTHREAD
-export NCCL_MAX_NCHANNELS=64
-# unset NCCL_ASYNC_ERROR_HANDLING
-# unset NCCL_SOCKET_NTHREADS
-# unset NCCL_LAUNCH_MODE
-
+# export NCCL_MIN_NCHANNELS=32 #64
+export NCCL_MAX_NCHANNELS=8
+# 134217728, 67108864, 33554432, 16777216
+export NCCL_NET_BUFFER=67108864
+unset NCCL_NSOCKS_PERTHREAD
+unset NCCL_ASYNC_ERROR_HANDLING
+unset NCCL_SOCKET_NTHREADS
+unset NCCL_LAUNCH_MODE
 
 
 # Uncomment and modify these as needed
@@ -51,8 +54,10 @@ torchrun --nproc_per_node=$N_GPUS $SCRIPT \
 --guidance_scale $CFG_SCALE \
 --seed $SEED \
 --split_text_embed_in_sp $SPLIT_TEXT_EMBED_IN_SP \
---num_sample_groups 100 \
+--num_sample_groups 8 \
 --control_repeat_length 5 \
+--decouple_vae false \
+--init_video_clip_frame 17 \  # 33 for 2 latents
 $PARALLEL_ARGS \
 $TASK_ARGS \
 $PIPEFUSION_ARGS \
@@ -62,3 +67,5 @@ $CFG_ARGS \
 $PARALLLEL_VAE \
 $ENABLE_TILING \
 $COMPILE_FLAG
+
+# --init_video_clip_frame 33 \

@@ -26,7 +26,7 @@ rm -f "$FILE_LIST"
 touch "$FILE_LIST"
 
 # Find and sort all .mp4 files in the directory, then add them to the list
-for file in $(ls "$VIDEO_DIR"/*.mp4 | sort); do
+for file in $(ls -v "$VIDEO_DIR"/*.mp4 | sort); do
     echo "file '$file'" >> "$FILE_LIST"
 done
 

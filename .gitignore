@@ -177,4 +177,5 @@ saved_checkpoints
 data/
 models/
 # *.mp4
-samples/*
+samples/
+nsight_results/
