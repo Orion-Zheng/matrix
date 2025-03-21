@@ -3,11 +3,9 @@
 set -x
 
 export PYTHONPATH=$PWD:$PYTHONPATH
-echo $PYTHONPATH
-# export HF_HOME="/mnt/world_model/longxiang/.cache/huggingface"
-export PROMPT="The video shows a white car driving on a country road on a sunny day. The car comes from the back of the scene, moving forward along the road, with open fields and distant hills surrounding it. As the car moves, the vegetation on both sides of the road and distant buildings can be seen. The entire video records the car's journey through the natural environment using a follow-shot technique."
+
 # Output folder
-OUTDIR="/workspace/matrix/samples/ulysses"
+OUTDIR="./output/ulysses"
 mkdir -p $OUTDIR
 
 # CogVideoX configuration
@@ -20,27 +18,24 @@ SEED=43
 
 # CogVideoX parallel configuration
 N_GPUS=2
-# N_GPUS=1 #keke added
-PARALLEL_ARGS="--ulysses_degree $N_GPUS --ring_degree 1"
+PARALLEL_ARGS="--ulysses_degree 2 --ring_degree 1"
 # CFG_ARGS="--use_cfg_parallel"
 SPLIT_TEXT_EMBED_IN_SP="true"
 
-# ==== original config =====
+# export NCCL_MIN_NCHANNELS
 export NCCL_DEBUG=VERSION
-# export NCCL_MIN_NCHANNELS=32 #64
-export NCCL_MAX_NCHANNELS=8
-# 134217728, 67108864, 33554432, 16777216
-export NCCL_NET_BUFFER=67108864
-unset NCCL_NSOCKS_PERTHREAD
-unset NCCL_ASYNC_ERROR_HANDLING
-unset NCCL_SOCKET_NTHREADS
-unset NCCL_LAUNCH_MODE
+# unset NCCL_NSOCKS_PERTHREAD
+export NCCL_MAX_NCHANNELS=64
+# unset NCCL_ASYNC_ERROR_HANDLING
+# unset NCCL_SOCKET_NTHREADS
+# unset NCCL_LAUNCH_MODE
+
 
 
 # Uncomment and modify these as needed
 # PIPEFUSION_ARGS="--num_pipeline_patch 8"
 # OUTPUT_ARGS="--output_type latent"
-# PARALLLEL_VAE="--use_parallel_vae"
+PARALLLEL_VAE="--parallel_decoding_idx 0"
 # ENABLE_TILING="--enable_tiling"
 # COMPILE_FLAG="--use_torch_compile"
 
@@ -48,7 +43,7 @@ torchrun --nproc_per_node=$N_GPUS $SCRIPT \
 --model_path "/matrix_ckpts/stage2" \
 --transformer_path "/matrix_ckpts/stage3/transformer" \
 --output_path "${OUTDIR}/output_seed${SEED}_cfgscale${CFG_SCALE}_splitText-${SPLIT_TEXT_EMBED_IN_SP}.mp4" \
---prompt "${PROMPT}" \
+--prompt "The video shows a white car driving on a country road on a sunny day. The car comes from the back of the scene, moving forward along the road, with open fields and distant hills surrounding it. As the car moves, the vegetation on both sides of the road and distant buildings can be seen. The entire video records the car's journey through the natural environment using a follow-shot technique." \
 --image_or_video_path /workspace/matrix/samples/base_video.mp4 \
 --control_signal D,D,D,D,DL,DL,DL,DL,DL,DL,D,D,D,D,D,D,D \
 --guidance_scale $CFG_SCALE \
@@ -56,9 +51,6 @@ torchrun --nproc_per_node=$N_GPUS $SCRIPT \
 --split_text_embed_in_sp $SPLIT_TEXT_EMBED_IN_SP \
 --num_sample_groups 8 \
 --control_repeat_length 5 \
---decouple_vae false \
---init_video_clip_frame 17 \
---parallel_decoding_idx -1 \
 $PARALLEL_ARGS \
 $TASK_ARGS \
 $PIPEFUSION_ARGS \
@@ -68,5 +60,3 @@ $CFG_ARGS \
 $PARALLLEL_VAE \
 $ENABLE_TILING \
 $COMPILE_FLAG
-
-# 33 for 2 latents

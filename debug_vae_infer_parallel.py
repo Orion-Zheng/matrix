@@ -1,6 +1,9 @@
 import os
 import time
 import torch
+import torch.distributed as dist
+
+from stage3.cogvideox.parallel_vae_utils import VAEParallelState
 from stage3.cogvideox.autoencoder import AutoencoderKLCogVideoX
 from diffusers.video_processor import VideoProcessor
 from diffusers.utils import export_to_video, load_image, load_video
@@ -17,7 +20,8 @@ def timer(label="Block"):
     if torch.cuda.is_available():
         torch.cuda.synchronize()  # Ensures all CUDA operations are completed before measuring time
     end_time = time.perf_counter()
-    print(f"{label} took {end_time - start_time:.6f} seconds")
+    if dist.get_rank() == 0:
+        print(f"{label} took {end_time - start_time:.6f} seconds")
     
 def decode_latents(latents: torch.Tensor, vae) -> torch.Tensor:
     # latents.shape: [batch_size, num_latents, num_channels=16, height, width]
@@ -43,22 +47,34 @@ if __name__ == "__main__":
     video_output_dir = "/workspace/matrix/samples/vae_decode_test"
     vae_ckpt_path = "/matrix_ckpts/stage3/vae"
     latents = torch.load("/workspace/matrix/latents_100.pt")
+
+    local_rank = int(os.environ["LOCAL_RANK"])
+    torch.cuda.set_device(local_rank)
     
-    device = torch.device("cuda:0")
-    vae = AutoencoderKLCogVideoX.from_pretrained(vae_ckpt_path, torch_dtype=torch.bfloat16).to(device)
+    dist.init_process_group(backend="nccl", init_method="env://")
+    VAEParallelState.initialize(vae_group=dist.group.WORLD)
+    device = torch.device(f"cuda:{local_rank}")
+
+    parallel_decoding_idx = 0
+    vae = AutoencoderKLCogVideoX.from_pretrained(vae_ckpt_path, torch_dtype=torch.bfloat16)
+    vae = vae.to(device)
+    vae.enable_parallel_decoding(parallel_decoding_idx)
     # vae = torch.compile(vae, mode="max-autotune-no-cudagraphs")
+
     vae_scale_factor_spatial = 2 ** (len(vae.config.block_out_channels) - 1)
     video_processor = VideoProcessor(vae_scale_factor=vae_scale_factor_spatial)
 
     latents = latents[:, :10]  # decode 100 latents at a time will cause OOM on 4090
-    print(f"========= Decode {latents.size(1)} Latents Together ============")
+    if dist.get_rank() == 0:
+        print(f"========= Decode {latents.size(1)} Latents Together ============")
     with timer(f"Decoding {latents.size(1)} latents"):
         frames = decode_latents(latents, vae)
     with timer(f"Postprocessing {latents.size(1)} latents"):
         full_video = video_processor.postprocess_video(video=frames, output_type='pil')
-        
-    print(f"========= Decodea a {str(n_tokens)} Latents Sliding Window at a Time ============")
+    if dist.get_rank() == 0:
+        print(f"========= Decodea a {str(n_tokens)} Latents Sliding Window at a Time ============")
     for idx, i in enumerate(range(latents.shape[1]-n_tokens+1)):
+        # idx, i = 0, 0
         # if idx > 3:
         #     break
         cur_latents = latents[:, i:i+n_tokens]
@@ -67,9 +83,8 @@ if __name__ == "__main__":
             frames = decode_latents(cur_latents, vae)
         # print(frames.shape)
         new_frames = frames[:, :, 4:]
-        with timer("Postprocessing"):
+        with timer(f"Postprocessing {n_tokens} latents"):
             full_video = video_processor.postprocess_video(video=frames, output_type='pil')
         assert len(full_video) == 1
         output_path = os.path.join(video_output_dir, f"video_{idx}.mp4")
         export_to_video(full_video[0], output_path, fps=16)
-    

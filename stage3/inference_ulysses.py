@@ -3,6 +3,7 @@ import functools
 from typing import List, Optional, Tuple, Union
 import argparse
 
+import gc
 import logging
 import time
 import torch
@@ -38,11 +39,14 @@ sys.path.insert(0, '/'.join(os.path.realpath(__file__).split('/')[:-2]))
 import torch
 from stage3.cogvideox.pipelines import CogVideoXStreamingPipeline
 from stage3.cogvideox.transformer import CogVideoXTransformer3DModel
+from stage3.cogvideox.autoencoder import AutoencoderKLCogVideoX
 from stage3.cogvideox.scheduler import CogVideoXSwinDPMScheduler
 from stage3.cogvideox.xfuser.attention_processor import (
     xFuserCogVideoXAttnProcessor2_0,
     xFuserCogVideoXControlAttnProcessor2_0
 )
+from stage3.cogvideox.parallel_vae_utils import VAEParallelState
+
 from diffusers.utils import export_to_video, load_image, load_video
 
 import decord
@@ -71,6 +75,8 @@ def enable_sage_attn(attn_type):
     elif attn_type == 'fa3_fp8':
         from sageattention.fa3_wrapper import fa3_fp8
         F.scaled_dot_product_attention = fa3_fp8
+        
+
 
 def generate_random_control_signal(
         length, seed, repeat_lens=[2, 2, 2], signal_choices=['D', 'DR', 'DL'],
@@ -114,16 +120,30 @@ def init_pipeline(
     enable_model_cpu_offload: bool = False,
     enable_tiling: bool = True,
     enable_slicing: bool = True,
-    decouple_vae: bool = False
+    decouple_vae: bool = False,
+    parallel_decoding_idx: int = -1,
 ):
     transformer = CogVideoXTransformer3DModel.from_pretrained(
         transformer_path or os.path.join(model_path, "transformer"),
         torch_dtype=dtype,
         low_cpu_mem_usage=False
     )
-    scheduler = CogVideoXSwinDPMScheduler.from_config(os.path.join(model_path, "scheduler"), timestep_spacing="trailing")
-    pipe = CogVideoXStreamingPipeline.from_pretrained(model_path, transformer=transformer, scheduler=scheduler, torch_dtype=dtype)
-    pipe.ray_vae = decouple_vae
+    vae = AutoencoderKLCogVideoX.from_pretrained(
+        os.path.join(model_path, "vae"),
+        torch_dtype=dtype,
+    )
+    scheduler = CogVideoXSwinDPMScheduler.from_config(
+        os.path.join(model_path, "scheduler"), 
+        timestep_spacing="trailing"
+    )
+    pipe = CogVideoXStreamingPipeline.from_pretrained(
+        model_path, 
+        transformer=transformer, 
+        vae=vae,
+        scheduler=scheduler, 
+        torch_dtype=dtype
+    )
+
     # If you're using with lora, add this code
     if lora_path:
         pipe.load_lora_weights(lora_path, weight_name="pytorch_lora_weights.safetensors")
@@ -147,6 +167,9 @@ def init_pipeline(
 
     if enable_slicing:
         pipe.vae.enable_slicing()
+
+    if parallel_decoding_idx > -1:
+        pipe.vae.enable_parallel_decoding(parallel_decoding_idx)
 
     return pipe
 
@@ -300,10 +323,11 @@ def main():
     # parallel arguments
     add_argument_overridable(parser, "--split_text_embed_in_sp", type=str, default="true", choices=["true", "false", "auto"], help="Whether to split text embed `encoder_hidden_states` for sequence parallel.")
     add_argument_overridable(parser, "--decouple_vae", type=str, default="false", choices=["true", "false"], help="Whether to use a decoupled vae decoder running on ray.")
+    add_argument_overridable(parser, "--parallel_decoding_idx", type=int, default=-1, choices=[-1, 0, 1, 2, 3], help="Upblock index in VAE.decoder to enable parallel decoding. -1 means disabling parallel decoding.")
     args = parser.parse_args()
+    
     engine_args = xFuserArgs.from_cli_args(args)
-
-    engine_config, input_config = engine_args.create_config()
+    engine_config, input_config = engine_args.create_config()  # initialize distributed environment
     local_rank = get_world_group().local_rank
 
     assert engine_args.pipefusion_parallel_degree == 1, "This script does not support PipeFusion."
@@ -327,13 +351,16 @@ def main():
         enable_model_cpu_offload=args.enable_model_cpu_offload,
         enable_tiling=args.enable_tiling,
         enable_slicing=args.enable_slicing,
-        decouple_vae=decouple_vae
+        decouple_vae=decouple_vae,
+        parallel_decoding_idx=args.parallel_decoding_idx,
     )
     
     parameter_peak_memory = torch.cuda.max_memory_allocated(device=f"cuda:{local_rank}")
 
     initialize_runtime_state(pipe, engine_config)  # set up `xfuser.core.distributed.runtime_state.DiTRuntimeState`
-    split_text_embed_in_sp = {  # True
+    if args.parallel_decoding_idx >= 0:
+        VAEParallelState.initialize(vae_group=get_world_group().device_group)
+    split_text_embed_in_sp = {
         "true": True,
         "false": False,
         "auto": None,
@@ -389,12 +416,20 @@ def main():
     elapsed_time = end_time - start_time
     peak_memory = torch.cuda.max_memory_allocated(device=f"cuda:{local_rank}")
     torch.cuda.reset_peak_memory_stats()
+    # ==== move DiT to CPU to save memory on rtx 4090 =======
+    vae_device = pipe.vae.device
+    pipe.to(torch.device('cpu'))
+    torch.cuda.empty_cache()
+    gc.collect()
+    pipe.vae = pipe.vae.to(vae_device)
+    # =======================================================
     if output is not None:
-        if is_dp_last_group():
+        if (args.parallel_decoding_idx < 0 and is_dp_last_group()) or (args.parallel_decoding_idx >= 0 and VAEParallelState.is_initialized()):
             with torch.no_grad():
                 vae_start_time = time.time()
                 output = pipe.decode_latents(output, sliced_decode=True)
                 output = pipe.video_processor.postprocess_video(video=output, output_type="pil")[0]
+                torch.cuda.synchronize()
                 vae_end_time = time.time()
                 vae_elapsed_time = vae_end_time - vae_start_time
                 vae_peak_memory = torch.cuda.max_memory_allocated(device=f"cuda:{local_rank}")
