@@ -57,7 +57,7 @@ if __name__ == "__main__":
     with timer(f"Postprocessing {latents.size(1)} latents"):
         full_video = video_processor.postprocess_video(video=frames, output_type='pil')
         
-    print(f"========= Decodea a {str(n_tokens)} Latents Sliding Window at a Time ============")
+    print(f"========= Decode a {str(n_tokens)} Latents Sliding Window each Time ============")
     for idx, i in enumerate(range(latents.shape[1]-n_tokens+1)):
         # if idx > 3:
         #     break
@@ -66,7 +66,7 @@ if __name__ == "__main__":
         with timer(f"Decoding {n_tokens} latents"):
             frames = decode_latents(cur_latents, vae)
         # print(frames.shape)
-        new_frames = frames[:, :, 4:]
+        new_frames = frames[:, :, 4:]  # the first 4 frame are idenntical
         with timer("Postprocessing"):
             full_video = video_processor.postprocess_video(video=frames, output_type='pil')
         assert len(full_video) == 1

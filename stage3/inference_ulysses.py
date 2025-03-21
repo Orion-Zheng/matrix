@@ -354,7 +354,7 @@ def main():
         decouple_vae=decouple_vae,
         parallel_decoding_idx=args.parallel_decoding_idx,
     )
-    
+    pipe.set_progress_bar_config(disable=True)
     parameter_peak_memory = torch.cuda.max_memory_allocated(device=f"cuda:{local_rank}")
 
     initialize_runtime_state(pipe, engine_config)  # set up `xfuser.core.distributed.runtime_state.DiTRuntimeState`

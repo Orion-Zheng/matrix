@@ -1,3 +1,4 @@
+# Usage: torchrun --nnodes 1 --nproc-per-node 4 debug_vae_infer_parallel.py
 import os
 import time
 import torch
@@ -42,6 +43,7 @@ def frames_to_video(frames: torch.Tensor, output_path: str, video_processor, fps
     assert len(full_video) == 1
     export_to_video(full_video[0], output_path, fps=fps)
     return full_video[0]
+
 if __name__ == "__main__":
     n_tokens = 2
     video_output_dir = "/workspace/matrix/samples/vae_decode_test"
@@ -72,7 +74,7 @@ if __name__ == "__main__":
     with timer(f"Postprocessing {latents.size(1)} latents"):
         full_video = video_processor.postprocess_video(video=frames, output_type='pil')
     if dist.get_rank() == 0:
-        print(f"========= Decodea a {str(n_tokens)} Latents Sliding Window at a Time ============")
+        print(f"========= Decode a {str(n_tokens)} Latents Sliding Window each Time ============")
     for idx, i in enumerate(range(latents.shape[1]-n_tokens+1)):
         # idx, i = 0, 0
         # if idx > 3:
@@ -82,7 +84,7 @@ if __name__ == "__main__":
         with timer(f"Decoding {n_tokens} latents"):
             frames = decode_latents(cur_latents, vae)
         # print(frames.shape)
-        new_frames = frames[:, :, 4:]
+        new_frames = frames[:, :, 4:]  # the first 4 frame are idenntical
         with timer(f"Postprocessing {n_tokens} latents"):
             full_video = video_processor.postprocess_video(video=frames, output_type='pil')
         assert len(full_video) == 1
