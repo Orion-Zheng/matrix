@@ -56,7 +56,6 @@ torchrun --nproc_per_node=$N_GPUS $SCRIPT \
 --split_text_embed_in_sp $SPLIT_TEXT_EMBED_IN_SP \
 --num_sample_groups 8 \
 --control_repeat_length 5 \
---decouple_vae false \
 --init_video_clip_frame 49 \
 --parallel_decoding_idx -1 \
 $PARALLEL_ARGS \

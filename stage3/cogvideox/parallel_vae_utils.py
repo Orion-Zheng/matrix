@@ -21,8 +21,9 @@ class VAEParallelState:
         else:
             cls._vae_group = vae_group
         cls._local_rank = int(os.environ.get('LOCAL_RANK', 0)) # FIXME: in ray all local_rank is 0
+        # assert cls._local_rank == 0 # in ray case
         cls._rank_mapping = None
-        cls._world_size = dist.get_world_size(cls.get_vae_group())
+        cls._world_size = dist.get_world_size(cls.get_vae_group())  # will return the size of vae_group
         cls._vae_rank = dist.get_rank(cls.get_vae_group())
         cls._is_split = False
         

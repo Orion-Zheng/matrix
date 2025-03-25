@@ -1,5 +1,6 @@
 #!/bin/bash
 # This file is modified from https://github.com/xdit-project/xDiT/blob/0.4.1/examples/run_cogvideo.sh
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 set -x
 
 export PYTHONPATH=$PWD:$PYTHONPATH
@@ -19,7 +20,7 @@ CFG_SCALE=1
 SEED=43
 
 # CogVideoX parallel configuration
-N_GPUS=2
+N_GPUS=1
 # N_GPUS=1 #keke added
 PARALLEL_ARGS="--ulysses_degree $N_GPUS --ring_degree 1"
 # CFG_ARGS="--use_cfg_parallel"
@@ -36,15 +37,15 @@ unset NCCL_ASYNC_ERROR_HANDLING
 unset NCCL_SOCKET_NTHREADS
 unset NCCL_LAUNCH_MODE
 
-
 # Uncomment and modify these as needed
 # PIPEFUSION_ARGS="--num_pipeline_patch 8"
 # OUTPUT_ARGS="--output_type latent"
 # PARALLLEL_VAE="--use_parallel_vae"
 # ENABLE_TILING="--enable_tiling"
 # COMPILE_FLAG="--use_torch_compile"
+RAY_MODE="--ray_mode"
 
-torchrun --nproc_per_node=$N_GPUS $SCRIPT \
+CUDA_VISIBLE_DEVICES=0 torchrun --nproc_per_node=$N_GPUS --master-port=29501 $SCRIPT \
 --model_path "/matrix_ckpts/stage2" \
 --transformer_path "/matrix_ckpts/stage3/transformer" \
 --output_path "${OUTDIR}/output_seed${SEED}_cfgscale${CFG_SCALE}_splitText-${SPLIT_TEXT_EMBED_IN_SP}.mp4" \
@@ -54,15 +55,16 @@ torchrun --nproc_per_node=$N_GPUS $SCRIPT \
 --guidance_scale $CFG_SCALE \
 --seed $SEED \
 --split_text_embed_in_sp $SPLIT_TEXT_EMBED_IN_SP \
---num_sample_groups 8 \
+--num_sample_groups 500 \
 --control_repeat_length 5 \
 --init_video_clip_frame 17 \
 --parallel_decoding_idx -1 \
+--warmup_steps 0 \
+$RAY_MODE \
 $PARALLEL_ARGS \
 $TASK_ARGS \
 $PIPEFUSION_ARGS \
 $OUTPUT_ARGS \
---warmup_steps 0 \
 $CFG_ARGS \
 $PARALLLEL_VAE \
 $ENABLE_TILING \

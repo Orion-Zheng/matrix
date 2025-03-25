@@ -839,8 +839,8 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
         vae: AutoencoderKLCogVideoX,
         transformer: CogVideoXTransformer3DModel,
         scheduler: Union[CogVideoXDPMScheduler, CogVideoXSwinDPMScheduler],
+        ray_mode: bool = False,
     ):
-        self.ray_vae = None
         super().__init__(
             tokenizer,
             text_encoder,
@@ -849,18 +849,27 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
             scheduler,
         )
         self.rank = get_world_group().rank
+        
+        self.ray_mode = ray_mode
         self.set_up_control_embeddings()
-        if self.ray_vae:
+        if self.ray_mode:
             self.init_ray_sender()
+            self.action = "N"  # in neutral gear
+            self.action_window = []
 
     def init_ray_sender(self):
         ray.init(address='auto')  # connect to ray cluster
         self.queue_manager = ray.get_actor("latents_queue", namespace='vae_decoder')
+        self.action_manager = ray.get_actor("current_action", namespace='vae_decoder') 
         
     def send_latents_to_queue(self, latents):
         assert hasattr(self, "queue_manager")
         if self.rank == 0:
             ray.get(self.queue_manager.put.remote(latents))
+    
+    def get_current_action(self):
+        assert hasattr(self, "action_manager")
+        return ray.get(self.action_manager.get.remote())
 
     def prepare_latents(
         self,
@@ -958,6 +967,36 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
         if start is not None and end is not None:
             control_signal_list = control_signal_list[start: end]
         control_indices = [self.control_signal_to_idx[c] for c in control_signal_list]
+        control = self.control_embeddings[control_indices]
+        return control
+    
+    def init_action_window(self, n_latents_in_window):
+        return [self.action] * n_latents_in_window
+    
+    def get_control_from_signal_interactive(self, n_latents_in_window, step_size):
+        # TODO: Handle this in multi-gpu setting
+        assert hasattr(self, "control_embeddings")
+        if len(self.action_window) == 0:  # initialize the action window for the first time
+            self.action_window = self.init_action_window(n_latents_in_window)
+        else:
+            # this will block the process if the initial value is None, continue until frontend updates the value from keyboard
+            action_input = self.get_current_action() 
+        
+            if str(action_input).lower() == "w":
+                self.action = "D"  # move forward
+            elif str(action_input).lower() == "s":
+                self.action = "B"  # move backward
+            elif str(action_input).lower() == "a":
+                self.action = "DL"  # move left
+            elif str(action_input).lower() == "d":
+                self.action = "DR"  # move right
+            elif str(action_input).lower() == "":
+                self.action = "N"  # in neutral gear
+        
+            self.action_window.extend([self.action] * step_size)
+            self.action_window = self.action_window[-n_latents_in_window:]
+        print(f"Current action window: {self.action_window}")
+        control_indices = [self.control_signal_to_idx[action] for action in self.action_window] 
         control = self.control_embeddings[control_indices]
         return control
 
@@ -1169,11 +1208,16 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
             self.print(f"Computing the {group_idx + 1}th/{num_sample_groups} group of video tokens...")
             # Each sample group is 1 s video in this case. (num_sample_groups = length // (TRAINING_BASE_VIDEO_MAX_LENGTH=4 // TRAINING_NOISE_GROUP=4))
             # Control signal
-            control_emb = self.get_control_from_signal(control_signal, control_start, control_start+num_frames)  # e.g. if num_frames = 17 --> control_emb.shape: torch.Size([17, 768])
+            if not self.ray_mode:
+                control_emb = self.get_control_from_signal(control_signal, control_start, control_start+num_frames)  # e.g. if num_frames = 17 --> control_emb.shape: torch.Size([17, 768])
+                control_start += window_size
+            else:
+                control_emb = self.get_control_from_signal_interactive(num_frames, window_size)
+            
             control_emb = control_emb.unsqueeze(0).to(prompt_embeds.dtype).contiguous()
             if do_classifier_free_guidance:
                 control_emb = torch.cat([control_emb] * 2)
-            control_start += window_size
+            
             dit_start_time = time.time()
             nvtx.range_push(f"Decoding of {group_idx}th latent")
             with self.progress_bar(total=inner_steps) as progress_bar:  # inner_steps = num_inference_steps // num_noise_groups
@@ -1260,7 +1304,7 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
                     [latents_cond_new, latents_remain, randn_like(latents_pop, generator)],
                     dim=1,
                 )  # append noisy video token to the right of the video sequence
-                if self.ray_vae:
+                if self.ray_mode:
                     self.send_latents_to_queue(latents_pop.to('cpu'))
                 else:
                     latents_pop_stream.append(latents_pop)
@@ -1269,7 +1313,7 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
                 latents_pop = latents[:, :window_size]
                 latents_remain = latents[:, window_size:]
                 latents_new = torch.cat([latents_remain, randn_like(latents_pop, generator)], dim=1)
-                if self.ray_vae:
+                if self.ray_mode:
                     self.send_latents_to_queue(latents_pop.to('cpu'))
                 else:
                     latents_pop_stream.append(latents_pop)

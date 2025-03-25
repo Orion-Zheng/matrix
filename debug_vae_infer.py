@@ -38,6 +38,8 @@ def frames_to_video(frames: torch.Tensor, output_path: str, video_processor, fps
     assert len(full_video) == 1
     export_to_video(full_video[0], output_path, fps=fps)
     return full_video[0]
+
+
 if __name__ == "__main__":
     n_tokens = 2
     video_output_dir = "/workspace/matrix/samples/vae_decode_test"
@@ -72,4 +74,4 @@ if __name__ == "__main__":
         assert len(full_video) == 1
         output_path = os.path.join(video_output_dir, f"video_{idx}.mp4")
         export_to_video(full_video[0], output_path, fps=16)
-    
+    export_to_video(full_video[0], output_path, fps=16)

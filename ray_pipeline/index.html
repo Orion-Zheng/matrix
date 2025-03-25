@@ -1,0 +1,56 @@
+<!-- index.html -->
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Image Stream Viewer</title>
+</head>
+<body>
+  <h2>TheMatrix (Press keys to interact)</h2>
+  <canvas id="canvas" width="400" height="300"></canvas>
+
+  <script>
+    const canvas = document.getElementById("canvas");
+    const ctx = canvas.getContext("2d");
+  
+    const ws = new WebSocket(`ws://localhost:8001/ws`);
+    const keyWS = new WebSocket(`ws://localhost:8001/ws/keyboard`);
+    
+
+    ws.onopen = () => {
+      console.log("✅ Connected to image stream server");
+    };
+  
+    ws.onmessage = (event) => {
+      <!-- console.log("📥 Received image data"); -->
+      const img = new Image();
+      img.src = "data:image/jpeg;base64," + event.data;
+      img.onload = () => {
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      };
+    };
+  
+    ws.onerror = (err) => {
+      console.error("❌ WebSocket error:", err);
+    };
+  
+    ws.onclose = () => {
+      console.warn("⚠️ WebSocket closed");
+    };
+  
+  
+    keyWS.onopen = () => {
+      console.log("✅ Connected to keyboard channel");
+    };
+  
+    window.addEventListener("keydown", (e) => {
+      keyWS.send(e.key);
+      console.log("⌨️ Sent key down:", e.key);
+    });
+    
+    window.addEventListener("keyup", (e) => {
+      keyWS.send("");  // 或 keyWS.send("null");
+      console.log("⌨️ Sent key up (cleared)");
+    });
+  </script>
+</body>
+</html>

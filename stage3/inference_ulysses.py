@@ -120,8 +120,8 @@ def init_pipeline(
     enable_model_cpu_offload: bool = False,
     enable_tiling: bool = True,
     enable_slicing: bool = True,
-    decouple_vae: bool = False,
     parallel_decoding_idx: int = -1,
+    ray_mode: bool = False,
 ):
     transformer = CogVideoXTransformer3DModel.from_pretrained(
         transformer_path or os.path.join(model_path, "transformer"),
@@ -141,7 +141,8 @@ def init_pipeline(
         transformer=transformer, 
         vae=vae,
         scheduler=scheduler, 
-        torch_dtype=dtype
+        torch_dtype=dtype,
+        ray_mode=ray_mode,
     )
 
     # If you're using with lora, add this code
@@ -223,26 +224,31 @@ def generate_video(
     frame_indices = frame_indices[:init_video_clip_frame]  # init_video_clip_frame = 17
     video = video_reader.get_batch(frame_indices).asnumpy()  # (17, 480, 720, 3)
     video = [PIL.Image.fromarray(frame) for frame in video]
-    if sampling_interval > 1:
-        control_signal_list = control_signal.split(",")
-        control_signal_list = [control_signal_list[i] for i in frame_indices]
-        control_signal = ",".join(control_signal_list)
-
+    
     # 4. Generate the video frames based on the prompt.
     num_frames = len(video)  # 17
     print(f"{len(video)=}")
     
-    # Pad control signal for new frames generation and [the redundancy used by the last window]
-    if control_signal_type == "raw":
-        control_signal_list = control_signal.split(",")
-        control_signal_list = [control_signal_list[i] for i in range(0, len(control_signal_list), 4)]
-        control_signal = ",".join(control_signal_list)
-    if len(control_signal.split(",")) < (num_frames - 1) / 4 * (num_sample_groups/num_noise_groups + 1) + 1:
-        control_padding_length = int(np.ceil((num_frames - 1) / 4 * (num_sample_groups/num_noise_groups + 1))) + 1 - len(control_signal.split(","))
-        control_signal = control_signal + "," + generate_random_control_signal(
-            control_padding_length, seed=control_seed, repeat_lens=[control_repeat_length] * 3
-        )
-    print(f"Control signal: {control_signal}, {len(control_signal.split(','))=}")
+    if control_signal:
+        if sampling_interval > 1 and control_signal is not None:
+            control_signal_list = control_signal.split(",")
+            control_signal_list = [control_signal_list[i] for i in frame_indices]
+            control_signal = ",".join(control_signal_list)
+
+        # Pad control signal for new frames generation and [the redundancy used by the last window]
+        if control_signal_type == "raw":
+            control_signal_list = control_signal.split(",")
+            control_signal_list = [control_signal_list[i] for i in range(0, len(control_signal_list), 4)]
+            control_signal = ",".join(control_signal_list)
+        if len(control_signal.split(",")) < (num_frames - 1) / 4 * (num_sample_groups/num_noise_groups + 1) + 1:
+            control_padding_length = int(np.ceil((num_frames - 1) / 4 * (num_sample_groups/num_noise_groups + 1))) + 1 - len(control_signal.split(","))
+            control_signal = control_signal + "," + generate_random_control_signal(
+                control_padding_length, seed=control_seed, repeat_lens=[control_repeat_length] * 3
+            )
+        print(f"Control signal: {control_signal}, {len(control_signal.split(','))=}")
+    else:
+        print("No control signal provided. Control signal will be generated randomly.")
+        
     with torch.no_grad():
         video_generate = pipe(  # , time_info   # CogVideoXStreamingPipeline
             prompt=prompt,
@@ -322,8 +328,8 @@ def main():
     add_argument_overridable(parser, "--init_video_clip_frame", type=int, default=17, help="Frame number of init_video to be clipped, should be 4n+1")
     # parallel arguments
     add_argument_overridable(parser, "--split_text_embed_in_sp", type=str, default="true", choices=["true", "false", "auto"], help="Whether to split text embed `encoder_hidden_states` for sequence parallel.")
-    add_argument_overridable(parser, "--decouple_vae", type=str, default="false", choices=["true", "false"], help="Whether to use a decoupled vae decoder running on ray.")
     add_argument_overridable(parser, "--parallel_decoding_idx", type=int, default=-1, choices=[-1, 0, 1, 2, 3], help="Upblock index in VAE.decoder to enable parallel decoding. -1 means disabling parallel decoding.")
+    add_argument_overridable(parser, "--ray_mode", action="store_true", help="Whether to send the latents to ray vae process for post processing")
     args = parser.parse_args()
     
     engine_args = xFuserArgs.from_cli_args(args)
@@ -335,11 +341,6 @@ def main():
     assert engine_config.runtime_config.use_torch_compile is False, "`use_torch_compile` is not supported yet."
 
     dtype = torch.float16 if args.dtype == "float16" else torch.bfloat16
-    decouple_vae = {  # True
-        "true": True,
-        "false": False,
-        "auto": None,
-    }[args.decouple_vae]
     pipe = init_pipeline(  # stage3.cogvideox.pipelines.pipeline_cogvideox.CogVideoXStreamingPipeline
         model_path=args.model_path,
         transformer_path=args.transformer_path,
@@ -351,8 +352,8 @@ def main():
         enable_model_cpu_offload=args.enable_model_cpu_offload,
         enable_tiling=args.enable_tiling,
         enable_slicing=args.enable_slicing,
-        decouple_vae=decouple_vae,
         parallel_decoding_idx=args.parallel_decoding_idx,
+        ray_mode=args.ray_mode,
     )
     pipe.set_progress_bar_config(disable=True)
     parameter_peak_memory = torch.cuda.max_memory_allocated(device=f"cuda:{local_rank}")
