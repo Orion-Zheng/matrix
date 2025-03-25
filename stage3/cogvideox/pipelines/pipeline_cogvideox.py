@@ -854,7 +854,7 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
         self.set_up_control_embeddings()
         if self.ray_mode:
             self.init_ray_sender()
-            self.action = "N"  # in neutral gear
+            self.action = "D"  
             self.action_window = []
 
     def init_ray_sender(self):
@@ -991,7 +991,7 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
             elif str(action_input).lower() == "d":
                 self.action = "DR"  # move right
             elif str(action_input).lower() == "":
-                self.action = "N"  # in neutral gear
+                self.action = "D"  # in neutral gear
         
             self.action_window.extend([self.action] * step_size)
             self.action_window = self.action_window[-n_latents_in_window:]
