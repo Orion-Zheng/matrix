@@ -1,5 +1,6 @@
 #!/bin/bash
 # This file is modified from https://github.com/xdit-project/xDiT/blob/0.4.1/examples/run_cogvideo.sh
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 set -x
 
 export PYTHONPATH=$PWD:$PYTHONPATH
@@ -19,7 +20,7 @@ CFG_SCALE=1
 SEED=43
 
 # CogVideoX parallel configuration
-N_GPUS=2
+N_GPUS=1
 # N_GPUS=1 #keke added
 PARALLEL_ARGS="--ulysses_degree $N_GPUS --ring_degree 1"
 # CFG_ARGS="--use_cfg_parallel"
@@ -50,14 +51,15 @@ torchrun --nproc_per_node=$N_GPUS $SCRIPT \
 --output_path "${OUTDIR}/output_seed${SEED}_cfgscale${CFG_SCALE}_splitText-${SPLIT_TEXT_EMBED_IN_SP}.mp4" \
 --prompt "${PROMPT}" \
 --image_or_video_path /workspace/matrix/samples/base_video.mp4 \
---control_signal D,D,D,D,DL,DL,DL,DL,DL,DL,D,D,D,D,D,D,D \
+--control_signal D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D,D \
 --guidance_scale $CFG_SCALE \
 --seed $SEED \
 --split_text_embed_in_sp $SPLIT_TEXT_EMBED_IN_SP \
---num_sample_groups 8 \
+--num_sample_groups 100 \
 --control_repeat_length 5 \
 --init_video_clip_frame 17 \
 --parallel_decoding_idx -1 \
+--num_inference_steps 20 \
 $PARALLEL_ARGS \
 $TASK_ARGS \
 $PIPEFUSION_ARGS \

@@ -74,13 +74,14 @@ class ParallelVAEDecodeWrapper:
         latents = kwargs.get('latents', None)
         assert latents is not None and self.vae is not None
         rank = get_world_group().rank
-        print(f"Rank {rank} is running the VAE")
+        # print(f"Rank {rank} is running the VAE")
         frames = None
         latents = latents.to(self.vae.device)
-        if rank == 0:
-            print(f"========= Decode {latents.size(1)} Latents Together ============")
-        with timer(f"Decoding {latents.size(1)} latents"):
-            frames = self.decode_latents(latents)
+        # if rank == 0:
+        #     print(f"========= Decode {latents.size(1)} Latents Together ============")
+        # with timer(f"Decoding {latents.size(1)} latents"):
+        print("input of vae worker: ", latents.shape)
+        frames = self.decode_latents(latents)
         # with timer(f"Postprocessing {latents.size(1)} latents"):
         #     full_video = self.video_processor.postprocess_video(video=frames, output_type='pil')
         return frames

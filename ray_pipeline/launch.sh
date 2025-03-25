@@ -1,6 +1,6 @@
 #!/bin/bash
-# ssh -L 8001:localhost:8001 -L 8081:localhost:8081 root@171.240.141.228 -p 45927
-# CUDA_VISIBLE_DEVICES=1 ray start --include-dashboard=True --head
+# ssh  -p 11775 root@140.228.20.3  -L 8001:localhost:8001 -L 8081:localhost:8081
+# CUDA_VISIBLE_DEVICES=1,2,3,4,5,6,7 ray start --include-dashboard=True --head
 cleanup() {
   echo "🧹 Cleaning up background processes..."
   kill $BACK_PID_1 $BACK_PID_2 $BACK_PID_3

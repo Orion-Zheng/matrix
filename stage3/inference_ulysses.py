@@ -448,8 +448,8 @@ def main():
             export_to_video(output, output_path, fps=args.fps)
             print(f"output saved to {output_path}")
 
-    if get_world_group().rank == get_world_group().world_size - 1:
-        print(f"DiT time: {elapsed_time:.2f} sec, VAE time: {vae_elapsed_time}, parameter memory: {parameter_peak_memory/1e9:.2f} GB, DiT memory: {peak_memory/1e9} GB, VAE memory: {vae_peak_memory/1e9} GB")
+        if get_world_group().rank == get_world_group().world_size - 1:
+            print(f"DiT time: {elapsed_time:.2f} sec, VAE time: {vae_elapsed_time}, parameter memory: {parameter_peak_memory/1e9:.2f} GB, DiT memory: {peak_memory/1e9} GB, VAE memory: {vae_peak_memory/1e9} GB")
     get_runtime_state().destory_distributed_env()
 
 

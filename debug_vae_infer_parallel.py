@@ -1,4 +1,4 @@
-# Usage: torchrun --nnodes 1 --nproc-per-node 4 debug_vae_infer_parallel.py
+# Usage: torchrun --nnodes 1 --nproc-per-node 6 debug_vae_infer_parallel.py
 import os
 import time
 import torch

@@ -14,6 +14,7 @@ if __name__ == "__main__":
     for i in range(latents.shape[1]):
         latent = latents[:, i:i+1]
         print(f"Sending latent {i+1}/{latents.shape[1]}")
+        print("shape of latent: ", latent.shape)
         ray.get(latent_queue.put.remote(latent))
         
         time.sleep(0.25)

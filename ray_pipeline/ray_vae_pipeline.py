@@ -29,7 +29,7 @@ class RayVAEPipeline(GPUExecutor):
 
     def _init_ray_workers(self):
         placement_group = initialize_ray_cluster(self.engine_config.parallel_config, 'auto') 
-        print("placement_group: ", placement_group)
+        # print("placement_group: ", placement_group)
         # create placement group and worker wrapper instance for lazy load worker
         self.workers = []
         for bundle_id, bundle in enumerate(placement_group.bundle_specs):
@@ -145,7 +145,7 @@ if __name__ == "__main__":
     vae_ray_pipline = RayVAEPipeline.from_pretrained(matrix_ckpt_path, engine_config, dist_env_var, torch_dtype=torch.bfloat16)
     frames = vae_ray_pipline(latents=latents)[0]  # only the rank 0 worker will return the results
     frames = frames[:, :, 4:]
-    print(frames.shape)
+    # print(frames.shape)
     with timer(f"Postprocessing {latents.size(1)} latents"):
         full_video = video_processor.postprocess_video(video=frames, output_type='pil')
     export_to_video(full_video[0], video_output_path, fps=16)

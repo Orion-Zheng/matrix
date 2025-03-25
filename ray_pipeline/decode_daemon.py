@@ -12,17 +12,17 @@ from ray_pipeline_utils import QueueManager, timer
 
 def frame_post_process(frames):
     # Options: Save to disk, send to postprocessing queue, etc
-    with timer(f"Postprocessing {frames.size(2)} Frames"):  # TODO: parallelize frames postprocessing
-        full_video = video_processor.postprocess_video(video=frames, output_type='pil')
-        for frame in full_video[0]:
-            post_process_queue.put.remote(frame)
+    # with timer(f"Postprocessing {frames.size(2)} Frames"):  # TODO: parallelize frames postprocessing
+    full_video = video_processor.postprocess_video(video=frames, output_type='pil')
+    for frame in full_video[0]:
+        post_process_queue.put.remote(frame)
         # video_output_path = os.path.join(video_output_dir, f"video_{counter}.mp4")
         # export_to_video(full_video[0], video_output_path, fps=16)
 
 if __name__ == "__main__":
     matrix_ckpt_path = "/matrix_ckpts/stage3/vae"
     video_output_dir = "/workspace/matrix/ray_pipeline"
-    vae_parallel = 1
+    vae_parallel = 6
     
     dist_env_var = {
         'env_vars': {"MASTER_ADDR": "localhost", "MASTER_PORT": "12355"}
@@ -52,9 +52,10 @@ if __name__ == "__main__":
             latent = torch.cat(latents_window, axis=1)
             
         print(f"[Consumer] Received and processing: {latent.shape}")
-        frames = vae_ray_pipline(latents=latent)[0]  # only the rank 0 worker will return the results
+        with timer("Decoding Latents"):
+            frames = vae_ray_pipline(latents=latent)[0]  # only the rank 0 worker will return the results
         
         frames = frames[:, :, 4:]  # torch.Size([1, 3, num_frames=4, 480, 720])
-        print(frames.shape)
+        # print(frames.shape)
         frame_post_process(frames)
         counter += 1
