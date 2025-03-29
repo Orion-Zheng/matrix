@@ -59,7 +59,6 @@ torchrun --nproc_per_node=$N_GPUS $SCRIPT \
 --control_repeat_length 5 \
 --init_video_clip_frame 17 \
 --parallel_decoding_idx -1 \
---num_inference_steps 20 \
 $PARALLEL_ARGS \
 $TASK_ARGS \
 $PIPEFUSION_ARGS \
@@ -69,5 +68,5 @@ $CFG_ARGS \
 $PARALLLEL_VAE \
 $ENABLE_TILING \
 $COMPILE_FLAG
-
+# --num_inference_steps 20 \
 # 33 for 2 latents

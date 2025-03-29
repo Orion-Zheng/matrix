@@ -1,5 +1,6 @@
 # ref: https://github.com/hzwer/Practical-RIFE
 # ref: https://colab.research.google.com/drive/1gIAzh8Mn8E7aqDIMtM74e894HpW_TA3S#scrollTo=NqRbvfA7LzhR
+import sys
 import torch
 import torch.nn.functional as F
 import numpy as np

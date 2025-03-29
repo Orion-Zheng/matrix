@@ -14,33 +14,33 @@ app = FastAPI()
 if not ray.is_initialized():
     ray.init(address="auto")
 # Use try except to avoid re-creating the same actor (uvicorn may run the script multiple times)
-try:
-    postproc_queue = ray.get_actor("postproc_queue", namespace="vae_decoder")
-except ValueError:
-    postproc_queue = QueueManager.options(namespace='vae_decoder', name="postproc_queue").remote()
-    
-try:
-    current_action = SharedVar.options(namespace='vae_decoder', name="current_action").remote(None)  # Create a queue for accepting latest action commands
-except ValueError:
-    current_action = ray.get_actor("current_action", namespace="vae_decoder")
+post2web_queue = ray.get_actor("post2web_queue", namespace="matrix")    
+current_action = ray.get_actor("current_action", namespace="matrix")
     
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     print("📡 Client connected to image stream")
-
-    TICK_DURATION = 0.1  # 每次批量播放的总时长
+    ray.get(current_action.set.remote(None))
+    TICK_DURATION = 1  # 每次批量播放的总时长
 
     try:
         while True:
             # 1) 记录当前循环开始时间
             start_time = asyncio.get_event_loop().time()
-            print("⏰ Start time:", start_time)
+            # print("⏰ Start time:", start_time)
             # 2) 一次性把队列里的所有图都拿出来
             img_list = await asyncio.to_thread(
-                lambda: ray.get(postproc_queue.get_batch.remote())
+                lambda: ray.get(post2web_queue.get_batch.remote())  # get batch 本身就是返回一个list，如果本身元素也是list，那么就是一个双层list
             )
-            print(f"📦 Got {len(img_list)} images from the queue")
+            if img_list:
+                print("📦 Got images from the queue")
+                # print("📦 len(img_list): ", img_list)
+            if img_list and isinstance(img_list[0], list):
+                img_list = [item for sublist in img_list for item in sublist]
+            if len(img_list) > 0:
+                print(f"📦 Got {len(img_list)} images from the queue")
+                # print(img_list)
             # 3) 过滤只要 PIL.Image
             valid_imgs = [img for img in img_list if isinstance(img, Image.Image)]
             if valid_imgs:

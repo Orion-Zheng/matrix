@@ -5,7 +5,7 @@ from PIL import Image
 import ray
 
 ray.init(address="auto")
-queue = ray.get_actor("postproc_queue", namespace="vae_decoder")
+post2web_queue = ray.get_actor("post2web_queue", namespace="matrix")
 
 batch_size = 5
 send_white = True  # 控制交替黑白
@@ -26,7 +26,7 @@ while True:
 
     print(f"Sending batch of {len(image_batch)} images")
     for image in image_batch:
-        queue.put.remote(image)
+        post2web_queue.put.remote(image)
     # queue.put.remote(image_batch)
 
     # Sleep 随机时间在 0.1s 到 0.3s 之间

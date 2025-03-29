@@ -848,7 +848,9 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
             transformer,
             scheduler,
         )
-        self.rank = get_world_group().rank
+        # The return of get_world_group() is a custom GroupCoordinator object
+        self.dit_process_group = get_world_group()  # TODO: this should be replaced with `get_dit_group` in the ray environment
+        self.rank = self.dit_process_group.rank
         
         self.ray_mode = ray_mode
         self.set_up_control_embeddings()
@@ -856,20 +858,43 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
             self.init_ray_sender()
             self.action = "D"  
             self.action_window = []
+            self.STRING2ACTION_ID = {"": 0, "w": 1, "a": 2, "s": 3, "d": 4}
+            self.ACTION_ID2ACTION = {0: "N", 1: "D", 2: "DL", 3: "B", 4: "DR"}
 
     def init_ray_sender(self):
-        ray.init(address='auto')  # connect to ray cluster
-        self.queue_manager = ray.get_actor("latents_queue", namespace='vae_decoder')
-        self.action_manager = ray.get_actor("current_action", namespace='vae_decoder') 
+        if self.rank == 0:  # assert the total worker rank order is [dit_workers=M, vae_workers=N, postprocessor_worker=1], so the first worker is the dit_worker
+            ray.init(address='auto')  # connect to ray cluster
+            self.queue_manager = ray.get_actor("dit2vae_latents_queue", namespace='matrix')
+            self.action_manager = ray.get_actor("current_action", namespace='matrix') 
         
     def send_latents_to_queue(self, latents):
-        assert hasattr(self, "queue_manager")
-        if self.rank == 0:
+        if self.rank == 0:  # TODO: Try not to use ray.get to avoid blocking to save time?
+            assert hasattr(self, "queue_manager")
             ray.get(self.queue_manager.put.remote(latents))
     
     def get_current_action(self):
-        assert hasattr(self, "action_manager")
-        return ray.get(self.action_manager.get.remote())
+        # Get the current action input from the action shared variable and broadcast it to all other dit workers
+        # return type: str, e.g. "D"
+        if self.rank == 0:
+            assert hasattr(self, "action_manager")
+            # Get the current action input from the action shared variable
+            cur_action_input = ray.get(self.action_manager.get.remote())  # this is blocking
+            assert cur_action_input in self.STRING2ACTION_ID, f"Invalid action input: {cur_action_input}"
+            cur_action_id = self.STRING2ACTION_ID.get(str(cur_action_input).lower(), 0)
+            current_action = self.ACTION_ID2ACTION[cur_action_id]  # input: 0, 1, 2, 3, 4 --> output: "N", "D", "DL", "B", "DR"
+            # Broadcast the action id to all other dit workers
+            cur_action_id_tensor = torch.tensor([cur_action_id], dtype=torch.long, device=self._execution_device)
+            torch.distributed.broadcast(cur_action_id_tensor, src=self.rank, group=self.dit_process_group)
+        else:
+            # Receive the action id from the first dit worker
+            device = torch.device(f'cuda:{self.dit_process_group.local_rank}')
+            cur_action_id_tensor = torch.zeros(1, dtype=torch.int, device=device)
+            torch.distributed.broadcast(cur_action_id_tensor, src=0, group=self.dit_process_group)
+            # Convert the action id to action string
+            current_action = self.ACTION_ID2ACTION[cur_action_id_tensor.item()]
+            
+        assert current_action in ["D", "DR", "DL", "N", "B"], f"Invalid action input: {current_action}"
+        return current_action  # e.g. "D"
 
     def prepare_latents(
         self,
@@ -980,22 +1005,12 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
             self.action_window = self.init_action_window(n_latents_in_window)
         else:
             # this will block the process if the initial value is None, continue until frontend updates the value from keyboard
-            action_input = self.get_current_action() 
-        
-            if str(action_input).lower() == "w":
-                self.action = "D"  # move forward
-            elif str(action_input).lower() == "s":
-                self.action = "B"  # move backward
-            elif str(action_input).lower() == "a":
-                self.action = "DL"  # move left
-            elif str(action_input).lower() == "d":
-                self.action = "DR"  # move right
-            elif str(action_input).lower() == "":
-                self.action = "D"  # in neutral gear
-        
+            self.action = self.get_current_action() 
+            
             self.action_window.extend([self.action] * step_size)
             self.action_window = self.action_window[-n_latents_in_window:]
-        print(f"Current action window: {self.action_window}")
+        if self.rank:
+            print(f"Current action window: {self.action_window}")
         control_indices = [self.control_signal_to_idx[action] for action in self.action_window] 
         control = self.control_embeddings[control_indices]
         return control
@@ -1156,7 +1171,7 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
             pad_prev_timesteps=False,
         )  # [T//G , F'], where F'=W*G
         
-        print(timesteps_grouped)
+        # print(timesteps_grouped)
         # tensor([[  0, 249, 499, 749, 999],
         #         [  0, 199, 449, 699, 949],
         #         [  0, 149, 399, 649, 899],

@@ -30,7 +30,7 @@ def enable_sage_attn(attn_type):
     elif attn_type == 'fa3_fp8':
         from sageattention.fa3_wrapper import fa3_fp8
         F.scaled_dot_product_attention = fa3_fp8
-enable_sage_attn('sage')  
+# enable_sage_attn('sage')  # this would cause loss in image quality
 
 def ring_attn(query, key, value, dropout_p=0.0, is_causal=False):
     out, *_ = _templated_ring_attention(

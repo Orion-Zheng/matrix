@@ -19,13 +19,16 @@ def timer(label="Block"):
         print(f"{label} took {end_time - start_time:.6f} seconds")
     else:
         print(f"{label} took {end_time - start_time:.6f} seconds")
-        
+
+
 @ray.remote(num_cpus=1, max_concurrency=3)
 class QueueManager:
     def __init__(self, maxsize=0):
+        print("QueueManager initialized!")
         self.queue = Queue(maxsize=maxsize)
 
     def put(self, item):
+        print(f"[QueueManager] put() called")
         self.queue.put(item)
 
     def get(self):
@@ -54,7 +57,7 @@ class SharedVar:
     async def set(self, new_value):
         async with self._condition:
             self.value = new_value
-            self._condition.notify_all()  # 通知等待中的 .get()
+            self._condition.notify_all()  # Notify all waiting `.get()`
 
     async def get(self):
         async with self._condition:
@@ -76,11 +79,11 @@ class SharedVar:
 # Usage:
 # 1. Connect to an existing ray cluster
 # ray.init(address='auto')  
-# 2. Create a queue
-# queue = QueueManager.options(namespace='the_name_space', name="the_queue_name").remote()
+# 2. Create an Actor
+# queue_pointer = QueueManager.options(namespace='matrix', name="latent_queue").remote()
 # 3. (For consumer) 
-# queue = ray.get_actor("the_queue_name", namespace="the_name_space")  # Ensure the actor is started
+# queue_pointer = ray.get_actor("latent_queue", namespace="matrix")  # Ensure the actor is started
 # content = ray.get(queue.get.remote())  # this will block until a content is available
 # 4. (For producer)
-# queue = ray.get_actor("the_queue_name", namespace="the_name_space")
+# queue = ray.get_actor("latent_queue", namespace="matrix")
 # ray.get(queue.put.remote(content))  # this is non-blocking

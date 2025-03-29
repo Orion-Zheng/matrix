@@ -6,7 +6,6 @@ set -x
 export PYTHONPATH=$PWD:$PYTHONPATH
 echo $PYTHONPATH
 # export HF_HOME="/mnt/world_model/longxiang/.cache/huggingface"
-export PROMPT=
 
 
 CUDA_VISIBLE_DEVICES=0 torchrun --nnodes 1 --nproc-per-node 1 --master-port 29501 /workspace/matrix/stage3/inference_ulysses.py \
@@ -19,11 +18,12 @@ CUDA_VISIBLE_DEVICES=0 torchrun --nnodes 1 --nproc-per-node 1 --master-port 2950
 --guidance_scale 1 \
 --seed 43 \
 --split_text_embed_in_sp true \
---num_sample_groups 100 \
+--num_sample_groups 500 \
 --control_repeat_length 5 \
 --ulysses_degree 1 \
 --ring_degree 1 \
 --height 480 \
 --width 720 \
 --warmup_steps 0 \
+--init_video_clip_frame 33 \
 --ray_mode 
