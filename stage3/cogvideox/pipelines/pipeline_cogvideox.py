@@ -64,6 +64,7 @@ from xfuser.core.distributed import (
     initialize_runtime_state,
     get_pipeline_parallel_world_size,
 )
+from xfuser.core.distributed.group_coordinator import GroupCoordinator
 import torch.cuda.nvtx as nvtx
 # ============================
 
@@ -864,7 +865,7 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
     def init_ray_sender(self):
         if self.rank == 0:  # assert the total worker rank order is [dit_workers=M, vae_workers=N, postprocessor_worker=1], so the first worker is the dit_worker
             ray.init(address='auto')  # connect to ray cluster
-            self.queue_manager = ray.get_actor("dit2vae_latents_queue", namespace='matrix')
+            self.queue_manager = ray.get_actor("dit2vae_queue", namespace='matrix')
             self.action_manager = ray.get_actor("current_action", namespace='matrix') 
         
     def send_latents_to_queue(self, latents):
@@ -875,24 +876,35 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
     def get_current_action(self):
         # Get the current action input from the action shared variable and broadcast it to all other dit workers
         # return type: str, e.g. "D"
+        device = torch.device(f'cuda:{self.dit_process_group.local_rank}')
+        # print("Rank: ", self.rank, "Device: ", device)
+        # print("current dit group: ", self.dit_process_group.ranks)
         if self.rank == 0:
             assert hasattr(self, "action_manager")
+            # print("[RANK 0] Send action to all other dit workers")
             # Get the current action input from the action shared variable
             cur_action_input = ray.get(self.action_manager.get.remote())  # this is blocking
-            assert cur_action_input in self.STRING2ACTION_ID, f"Invalid action input: {cur_action_input}"
+            # assert cur_action_input in self.STRING2ACTION_ID, f"Invalid action input: {cur_action_input}"
             cur_action_id = self.STRING2ACTION_ID.get(str(cur_action_input).lower(), 0)
+            # print(f"cur_action_id: {cur_action_id}")
             current_action = self.ACTION_ID2ACTION[cur_action_id]  # input: 0, 1, 2, 3, 4 --> output: "N", "D", "DL", "B", "DR"
             # Broadcast the action id to all other dit workers
-            cur_action_id_tensor = torch.tensor([cur_action_id], dtype=torch.long, device=self._execution_device)
-            torch.distributed.broadcast(cur_action_id_tensor, src=self.rank, group=self.dit_process_group)
+            cur_action_id_tensor = torch.tensor([cur_action_id], dtype=torch.int, device=device)
+            # print(f"[RANK 0] cur_action_id_tensor: {cur_action_id_tensor}")
+            # print(f"dit_process_group: {self.dit_process_group.device_group}")
+            assert isinstance(self.dit_process_group.device_group, torch.distributed.ProcessGroup), f"Invalid process group type: {type(self.dit_process_group.device_group)}"
+            torch.distributed.broadcast(cur_action_id_tensor, src=self.rank, group=self.dit_process_group.device_group)
+            # self.dit_process_group.broadcast(cur_action_id_tensor, src=self.rank)
         else:
+            # print(f"[RANK {self.rank}] Receive action from rank 0")
             # Receive the action id from the first dit worker
-            device = torch.device(f'cuda:{self.dit_process_group.local_rank}')
             cur_action_id_tensor = torch.zeros(1, dtype=torch.int, device=device)
-            torch.distributed.broadcast(cur_action_id_tensor, src=0, group=self.dit_process_group)
+            torch.distributed.broadcast(cur_action_id_tensor, src=0, group=self.dit_process_group.device_group)
+            # self.dit_process_group.broadcast(cur_action_id_tensor, src=self.rank)
             # Convert the action id to action string
             current_action = self.ACTION_ID2ACTION[cur_action_id_tensor.item()]
             
+        print(f"[RANK {self.rank}] current_action: {current_action}")
         assert current_action in ["D", "DR", "DL", "N", "B"], f"Invalid action input: {current_action}"
         return current_action  # e.g. "D"
 

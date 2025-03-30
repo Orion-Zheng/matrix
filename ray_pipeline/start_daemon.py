@@ -14,7 +14,7 @@ from ray_pipeline_utils import QueueManager, timer
 def debug_daemon():
     # init_ray()
     matrix_ckpt_path = "/matrix_ckpts/stage3/vae"
-    video_output_dir = "/workspace/matrix/ray_pipeline"
+    video_output_dir = "/workspace/matrix/samples/ray_pipeline_output"
     frame_interpolator_model_path = "/workspace/matrix/Practical_RIFE/train_log"
     export_video_for_debug = False
     
@@ -28,7 +28,7 @@ def debug_daemon():
     post2web_queue = ray.get_actor("post2web_queue", namespace='matrix')  # Postprocessing --> Web
     
     # Set the parallel configuration in the parallel config
-    parallel_config = ParallelConfig(world_size=2, dit_parallel_size=0, vae_parallel_size=1, post_parallel_size=1)
+    parallel_config = ParallelConfig(world_size=3, dit_parallel_size=0, vae_parallel_size=2, post_parallel_size=1)
     engine_config = EngineConfig(parallel_config=parallel_config)
     matrix_ray_pipline = RayMatrixPipeline.from_pretrained(matrix_ckpt_path, engine_config, dist_env_var, 
                                                            frame_interpolator_model_path=frame_interpolator_model_path,
@@ -77,7 +77,7 @@ def debug_daemon():
 def new_daemon():
     # init_ray()
     matrix_ckpt_path = "/matrix_ckpts/stage3/vae"
-    video_output_dir = "/workspace/matrix/ray_pipeline"
+    video_output_dir = "/workspace/matrix/samples/ray_pipeline_output"
     frame_interpolator_model_path = "/workspace/matrix/Practical_RIFE/train_log"
     export_video_for_debug = False
     
