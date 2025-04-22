@@ -31,17 +31,18 @@ from diffusers.utils import logging, replace_example_docstring
 from diffusers.utils.torch_utils import randn_tensor
 from diffusers.video_processor import VideoProcessor
 
-from ..loader import CogVideoXLoraLoaderMixin
-from ..autoencoder import AutoencoderKLCogVideoX
-from ..transformer import CogVideoXTransformer3DModel
-from ..scheduler import (
+sys.path.insert(0, '/'.join(os.path.realpath(__file__).split('/')[:-3]))
+from stage4.cogvideox.loader import CogVideoXLoraLoaderMixin
+from stage4.cogvideox.autoencoder import AutoencoderKLCogVideoX
+from stage4.cogvideox.transformer import CogVideoXTransformer3DModel
+from stage4.cogvideox.scheduler import (
     LCMSwinScheduler,
     CogVideoXDPMScheduler,
     CogVideoXSwinDPMScheduler,
     expand_timesteps_with_group,
 )
-from .pipeline_output import CogVideoXPipelineOutput
-from ..control_adapter import CONTROL_SIGNAL_TO_PROMPT
+from stage4.cogvideox.pipelines.pipeline_output import CogVideoXPipelineOutput
+from stage4.cogvideox.control_adapter import CONTROL_SIGNAL_TO_PROMPT
 
 from transformers import AutoTokenizer, CLIPModel
 

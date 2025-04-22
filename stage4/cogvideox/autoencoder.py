@@ -1274,7 +1274,7 @@ class AutoencoderKLCogVideoX(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         use_post_quant_conv: bool = False,
     ):
         super().__init__()
-
+        self.decoder_cache = None
         self.encoder = CogVideoXEncoder3D(
             in_channels=in_channels,
             out_channels=latent_channels,
@@ -1479,7 +1479,7 @@ class AutoencoderKLCogVideoX(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         conv_cache = None
         dec = []
 
-        if keep_cache and hasattr(self, "decoder_cache"):
+        if keep_cache and self.decoder_cache is not None:
             conv_cache = self.decoder_cache
         for i in range(num_batches):
             remaining_frames = num_frames % frame_batch_size

@@ -4,12 +4,23 @@ import numpy as np
 import os
 import sys
 sys.path.insert(0, '/'.join(os.path.realpath(__file__).split('/')[:-2]))
-
+print( '/'.join(os.path.realpath(__file__).split('/')[:-2]))
 import torch
 from stage4.cogvideox.pipelines import CogVideoXStreamingPipeline
 from stage4.cogvideox.transformer import CogVideoXTransformer3DModel
 from stage4.cogvideox.scheduler import LCMSwinScheduler
 
+from stage4.cogvideox.pipelines.pipeline_output import CogVideoXPipelineOutput
+from stage4.cogvideox.loader import CogVideoXLoraLoaderMixin
+from stage4.cogvideox.autoencoder import AutoencoderKLCogVideoX
+from stage4.cogvideox.transformer import CogVideoXTransformer3DModel
+from stage4.cogvideox.scheduler import (
+    LCMSwinScheduler,
+    CogVideoXDPMScheduler,
+    CogVideoXSwinDPMScheduler,
+    expand_timesteps_with_group,
+)
+from stage4.cogvideox.control_adapter import CONTROL_SIGNAL_TO_PROMPT
 
 from diffusers.utils import export_to_video, load_image, load_video
 
@@ -95,18 +106,18 @@ def generate_video(
     - seed (int): The seed for reproducibility.
     - fps (int): The frames per second for the generated video.
     """
-
     transformer = CogVideoXTransformer3DModel.from_pretrained(
         os.path.join(model_path, "transformer"),
         torch_dtype=dtype,
         # low_cpu_mem_usage=False , set it false for load sharded weights
     )
-    pipe = CogVideoXStreamingPipeline.from_pretrained(model_path, transformer=transformer, torch_dtype=dtype)
+    vae = AutoencoderKLCogVideoX.from_pretrained(os.path.join(model_path, 'vae'), torch_dtype=dtype)
+    pipe = CogVideoXStreamingPipeline.from_pretrained(model_path, vae=vae, transformer=transformer, torch_dtype=dtype)
     pipe.scheduler = LCMSwinScheduler.from_config(pipe.scheduler.config)
 
     # Init_video should be pillow list.
     video_reader = decord.VideoReader(video_path)
-    video_num_frames = len(video_reader)
+    video_num_frames = num_frames # len(video_reader)
     video_fps = video_reader.get_avg_fps()
     sampling_interval = video_fps/fps
     frame_indices = np.round(np.arange(0, video_num_frames, sampling_interval)).astype(int).tolist()
@@ -126,6 +137,8 @@ def generate_video(
             )
 
     pipe.to(gpu_id)
+    
+    # Keep_cache feature conflicts with the tiling/slicing feature
     # pipe.enable_sequential_cpu_offload()
     pipe.vae.enable_slicing()
     pipe.vae.enable_tiling()
@@ -141,7 +154,7 @@ def generate_video(
     if len(control_signal.split(",")) < (num_frames - 1) / 4 * (num_sample_groups/num_noise_groups + 1) + 1:
         control_padding_length = int(np.ceil((num_frames - 1) / 4 * (num_sample_groups/num_noise_groups + 1))) + 1 - len(control_signal.split(","))
         control_signal = control_signal + "," + generate_random_control_signal(control_padding_length, seed=control_seed)
-    print(f"Control signal: {control_signal}")
+    
     with torch.no_grad():
         start_time = datetime.datetime.now()
         video_generate = pipe(

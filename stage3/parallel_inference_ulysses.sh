@@ -40,7 +40,7 @@ PARALLLEL_VAE="--parallel_decoding_idx 0"
 # COMPILE_FLAG="--use_torch_compile"
 
 torchrun --nproc_per_node=$N_GPUS ./$SCRIPT \
---model_path MODEL_PATH \
+--model_path "/mnt/d/model_ckpts_stage4/model_ckpts_stage4" \
 --output_path "${OUTDIR}/output_seed${SEED}_cfgscale${CFG_SCALE}_splitText-${SPLIT_TEXT_EMBED_IN_SP}.mp4" \
 --prompt "The video shows a white car driving on a country road on a sunny day. The car comes from the back of the scene, moving forward along the road, with open fields and distant hills surrounding it. As the car moves, the vegetation on both sides of the road and distant buildings can be seen. The entire video records the car's journey through the natural environment using a follow-shot technique." \
 --image_or_video_path VIDEO_PATH \
