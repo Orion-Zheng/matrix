@@ -1,22 +1,35 @@
 import argparse
-from typing import Literal, Optional
-from dataclasses import dataclass, field
+from typing import Literal, Optional, Union
+from dataclasses import dataclass
 import numpy as np
 import os
 import sys
 sys.path.insert(0, '/'.join(os.path.realpath(__file__).split('/')[:-2]))
 print( '/'.join(os.path.realpath(__file__).split('/')[:-2]))
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 import torch
-from pipelines.pipeline_cogvideox_gym import (CogVideoXStreamingPipeline, CogVideoXTransformer3DModel,
-                                              LCMSwinScheduler, AutoencoderKLCogVideoX, 
-                                              CogVideoXTransformer3DModel, CogVideoXTransformer3DModel, 
-                                              CONTROL_SIGNAL_TO_PROMPT)
+# from stage4.cogvideox.pipelines import CogVideoXStreamingPipeline
+from wm_gym.pipelines import CogVideoXStreamingPipeline
 from vlm_reward_model import OpenAIRewardModel
+from stage4.cogvideox.transformer import CogVideoXTransformer3DModel
+from stage4.cogvideox.scheduler import LCMSwinScheduler
+
+from stage4.cogvideox.pipelines.pipeline_output import CogVideoXPipelineOutput
+from stage4.cogvideox.loader import CogVideoXLoraLoaderMixin
+from stage4.cogvideox.autoencoder import AutoencoderKLCogVideoX
+from stage4.cogvideox.transformer import CogVideoXTransformer3DModel
+from stage4.cogvideox.scheduler import (
+    LCMSwinScheduler,
+    CogVideoXDPMScheduler,
+    CogVideoXSwinDPMScheduler,
+    expand_timesteps_with_group,
+)
+from stage4.cogvideox.control_adapter import CONTROL_SIGNAL_TO_PROMPT
+
 from diffusers.utils import export_to_video, load_image, load_video
 
 import decord
 import PIL.Image
+import datetime
 
 import random
 
@@ -126,8 +139,12 @@ def load_matrix_gym_pipe(wm_gen_config):
         pipe.fuse_lora(components=["transformer"],)  # lora_scale=1 / lora_rank  # It seems that there are some issues here, removed.
     pipe.to(wm_gen_config.gpu_id)  # pipe._execution_device from cpu --> cuda:0
     pipe.wm_gen_config = wm_gen_config
+    pipe.vae.enable_slicing()
+    pipe.vae.enable_tiling()
     wm_init_args = prepare_wm_env_init_args(wm_gen_config)
     pipe.gym_init(**wm_init_args)
+    pipe.vae.disable_slicing()
+    pipe.vae.disable_tiling()
     return pipe
     
 class matrixGym:
@@ -173,7 +190,7 @@ class matrixGym:
         return observation
 
 
-if __name__ == "__main__":
+def test():
     matrix_gen_config = MatrixGenerationArgs(
         prompt="On a lush green meadow, a white car is driving. From an overhead panoramic shot, \
                 this car is adorned with blue and red stripes on its body, and it has a black spoiler at the rear. \
@@ -224,3 +241,7 @@ if __name__ == "__main__":
     print("vlm_response", info)
     export_to_video(video_clip, fps=matrix_gen_config.fps, 
                     output_video_path=os.path.join(debug_clip_output_dir, "2_DR_video.mp4"))
+    
+    
+if __name__ == "__main__":
+    test()

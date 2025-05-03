@@ -6,7 +6,8 @@ import sys
 sys.path.insert(0, '/'.join(os.path.realpath(__file__).split('/')[:-2]))
 print( '/'.join(os.path.realpath(__file__).split('/')[:-2]))
 import torch
-from stage4.cogvideox.pipelines import CogVideoXStreamingPipeline
+# from stage4.cogvideox.pipelines import CogVideoXStreamingPipeline
+from wm_gym.pipelines import CogVideoXStreamingPipeline
 from stage4.cogvideox.transformer import CogVideoXTransformer3DModel
 from stage4.cogvideox.scheduler import LCMSwinScheduler
 
@@ -112,6 +113,8 @@ def generate_video(
         # low_cpu_mem_usage=False , set it false for load sharded weights
     )
     vae = AutoencoderKLCogVideoX.from_pretrained(os.path.join(model_path, 'vae'), torch_dtype=dtype)
+    vae.to(0)
+    v = vae.encode(torch.randn((1, 3, 17, 480, 720), dtype=torch.float16).to(vae.device))
     pipe = CogVideoXStreamingPipeline.from_pretrained(model_path, vae=vae, transformer=transformer, torch_dtype=dtype)
     pipe.scheduler = LCMSwinScheduler.from_config(pipe.scheduler.config)
 
@@ -187,7 +190,7 @@ if __name__ == "__main__":
     parser.add_argument("--lora_rank", type=int, default=256, help="The rank of the LoRA weights")
     parser.add_argument("--output_path", type=str, default="./output.mp4", help="The path save generated video")
     parser.add_argument("--num_inference_steps", type=int, default=4, help="Inference steps")
-    parser.add_argument("--num_frames", type=int, default=33, help="Number of steps for the inference process")
+    parser.add_argument("--num_frames", type=int, default=17, help="Number of steps for the inference process")
     parser.add_argument("--width", type=int, default=720, help="Number of steps for the inference process")
     parser.add_argument("--height", type=int, default=480, help="Number of steps for the inference process")
     parser.add_argument("--fps", type=int, default=16, help="Number of steps for the inference process")
@@ -234,4 +237,3 @@ if __name__ == "__main__":
         original_inference_steps=args.original_inference_steps,
         lcm_multiplier = args.lcm_multiplier,
     )
-
