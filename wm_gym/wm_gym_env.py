@@ -7,7 +7,7 @@ import sys, os
 sys.path.insert(0, os.path.abspath('.'))
 import torch
 from wm_gym.vlm_reward_model import OpenAIRewardModel
-from wm_gym.pipelines import CogVideoXStreamingPipeline
+from wm_gym.cogvideox.pipelines import CogVideoXStreamingPipeline
 from wm_gym.cogvideox.transformer import CogVideoXTransformer3DModel
 from wm_gym.cogvideox.scheduler import LCMSwinScheduler
 
@@ -117,6 +117,7 @@ def prepare_wm_env_init_args(wm_gen_config):
     }
     return init_args
 
+@torch.no_grad()
 def load_matrix_gym_pipe(wm_gen_config, disable_progress_bar=False):
     transformer = CogVideoXTransformer3DModel.from_pretrained(
             os.path.join(wm_gen_config.model_path, "transformer"),
@@ -149,12 +150,14 @@ class matrixGym:
         self.wm_gen_config = wm_gym_pipe.wm_gen_config
         self.vlm_reward_model = vlm_reward_model
     
+    @torch.no_grad()
     def reset(self):
         self.current_step = 0
         info = {}
         self.current_state, self.current_frames, self.current_pil_list = self.wm_gym_pipe.gym_reset()
         return self.current_state, info
     
+    @torch.no_grad()
     def vlm_feedback(self, observations, action=None):
         # vlm input: observations(pil_list), action(optional)
         # vlm output: reward, terminated, info
@@ -164,6 +167,7 @@ class matrixGym:
         info = {"env info": full_analysis}
         return reward, terminated, info
     
+    @torch.no_grad()
     def step(self, action, skip_reward=False):
         assert action in CONTROL_SIGNAL_TO_PROMPT.keys(), f"Invalid action: {action}. Valid actions are: {CONTROL_SIGNAL_TO_PROMPT.keys()}"
         truncated = False  # whether the episode is truncated by max_iteractions
@@ -183,6 +187,7 @@ class matrixGym:
             print("Max iterations reached, stop generating.")
         return self.current_state, reward, terminated, truncated, info
     
+    @torch.no_grad()
     def render(self, mode="pil"):
         observation = self.wm_gym_pipe.gym_render(mode=mode)
         return observation

@@ -10,20 +10,10 @@ sys.path.insert(0, os.path.abspath('.'))
 # print( '/'.join(os.path.realpath(__file__).split('/')[:-2]))
 import torch
 from wm_gym.vlm_reward_model import OpenAIRewardModel
-from wm_gym.pipelines import CogVideoXStreamingPipeline
+from wm_gym.cogvideox.pipelines import CogVideoXStreamingPipeline
 from wm_gym.cogvideox.transformer import CogVideoXTransformer3DModel
 from wm_gym.cogvideox.scheduler import LCMSwinScheduler
-
-from wm_gym.cogvideox.pipelines.pipeline_output import CogVideoXPipelineOutput
-from wm_gym.cogvideox.loader import CogVideoXLoraLoaderMixin
 from wm_gym.cogvideox.autoencoder import AutoencoderKLCogVideoX
-from wm_gym.cogvideox.transformer import CogVideoXTransformer3DModel
-from wm_gym.cogvideox.scheduler import (
-    LCMSwinScheduler,
-    CogVideoXDPMScheduler,
-    CogVideoXSwinDPMScheduler,
-    expand_timesteps_with_group,
-)
 from wm_gym.cogvideox.control_adapter import CONTROL_SIGNAL_TO_PROMPT
 
 from diffusers.utils import export_to_video, load_image, load_video
@@ -64,6 +54,15 @@ def generate_random_control_signal(
             result.append(signal_choices[current_idx])
         return ','.join(result)
 
+def load_pipe_from_ckpt(model_path, dtype):
+    transformer = CogVideoXTransformer3DModel.from_pretrained(
+        os.path.join(model_path, "transformer"),
+        torch_dtype=dtype,
+        # low_cpu_mem_usage=False , set it false for load sharded weights
+    )
+    vae = AutoencoderKLCogVideoX.from_pretrained(os.path.join(model_path, 'vae'), torch_dtype=dtype)
+    pipe = CogVideoXStreamingPipeline.from_pretrained(model_path, vae=vae, transformer=transformer, torch_dtype=dtype)
+    pipe.scheduler = LCMSwinScheduler.from_config(pipe.scheduler.config)
 
 def generate_video(
     prompt: str,
@@ -128,6 +127,7 @@ def generate_video(
     frame_indices = frame_indices[:init_video_clip_frame]
     video = video_reader.get_batch(frame_indices).asnumpy()
     video = [PIL.Image.fromarray(frame) for frame in video]
+    
     if sampling_interval > 1:
         control_signal_list = control_signal.split(",")
         control_signal_list = [control_signal_list[i] for i in frame_indices]
@@ -361,12 +361,14 @@ class matrixGym:
         self.wm_gen_config = wm_gym_pipe.wm_gen_config
         self.vlm_reward_model = vlm_reward_model
     
+    @torch.no_grad()
     def reset(self):
         self.current_step = 0
         info = {}
         self.current_state, self.current_frames, self.current_pil_list = self.wm_gym_pipe.gym_reset()
         return self.current_state, info
     
+    @torch.no_grad()
     def vlm_feedback(self, observations, action=None):
         # vlm input: observations(pil_list), action(optional)
         # vlm output: reward, terminated, info
@@ -376,6 +378,7 @@ class matrixGym:
         info = {"env info": full_analysis}
         return reward, terminated, info
     
+    @torch.no_grad()
     def step(self, action, skip_reward=False):
         assert action in CONTROL_SIGNAL_TO_PROMPT.keys(), f"Invalid action: {action}. Valid actions are: {CONTROL_SIGNAL_TO_PROMPT.keys()}"
         truncated = False  # whether the episode is truncated by max_iteractions
@@ -395,6 +398,7 @@ class matrixGym:
             print("Max iterations reached, stop generating.")
         return self.current_state, reward, terminated, truncated, info
     
+    @torch.no_grad()
     def render(self, mode="pil"):
         observation = self.wm_gym_pipe.gym_render(mode=mode)
         return observation

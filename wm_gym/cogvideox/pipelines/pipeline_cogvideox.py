@@ -1299,7 +1299,7 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
             control_emb, control_indices = self.get_control_from_signal(gen_config.control_signal, control_start, control_start + gen_config.num_frames)
             control_emb = control_emb.unsqueeze(0).to(gen_step_config.prompt_embeds.dtype).contiguous()
             control_start += gen_step_config.window_size
-            print("current control_indices: ", control_indices)
+            # print("current control_indices: ", control_indices)
             # ======================================================
             
             if gen_config.do_classifier_free_guidance:
@@ -1352,7 +1352,7 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
         for i in range(self.gen_step_config.num_noise_groups):
             control_emb, control_indices = self.get_control_from_signal(expanded_action_window_str, i, i+self.gen_config.num_frames)
             control_emb = control_emb.unsqueeze(0).to(self.gen_step_config.prompt_embeds.dtype).contiguous()
-            print("current control_indices: ", control_indices)
+            # print("current control_indices: ", control_indices)
             
             if self.gen_config.do_classifier_free_guidance:
                 control_emb = torch.cat([control_emb, control_emb], dim=0)
@@ -1389,7 +1389,7 @@ class CogVideoXStreamingPipeline(CogVideoXPipeline):
         for i in range(self.gen_step_config.num_noise_groups):
             control_emb, control_indices = self.get_control_from_signal(expanded_action_window_str, i, i+self.gen_config.num_frames)
             control_emb = control_emb.unsqueeze(0).to(self.gen_step_config.prompt_embeds.dtype).contiguous()
-            print("current control_indices: ", control_indices)
+            # print("current control_indices: ", control_indices)
             
             if self.gen_config.do_classifier_free_guidance:
                 control_emb = torch.cat([control_emb, control_emb], dim=0)

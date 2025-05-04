@@ -16,7 +16,7 @@ import decord
 import torch
 from diffusers.utils import export_to_video, load_image, load_video
 
-from wm_gym.pipelines import CogVideoXStreamingPipeline
+from wm_gym.cogvideox.pipelines import CogVideoXStreamingPipeline
 # from wm_gym.cogvideox.pipelines import CogVideoXStreamingPipeline
 from wm_gym.vlm_reward_model import OpenAIRewardModel
 from wm_gym.cogvideox.transformer import CogVideoXTransformer3DModel
@@ -122,6 +122,7 @@ def prepare_wm_env_init_args(wm_gen_config):
     }
     return init_args
 
+@torch.no_grad()
 def load_matrix_gym_pipe(wm_gen_config):
     transformer = CogVideoXTransformer3DModel.from_pretrained(
             os.path.join(wm_gen_config.model_path, "transformer"),

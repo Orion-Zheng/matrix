@@ -15,6 +15,7 @@
 
 from typing import Dict, Optional, Tuple, Union, List
 
+import gc
 import numpy as np
 import torch
 import torch.nn as nn
@@ -1437,11 +1438,10 @@ class AutoencoderKLCogVideoX(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             enc.append(x_intermediate)
 
         enc = torch.cat(enc, dim=2)
-        # ========== Post-process ==========
-        # import gc
-        # del conv_cache
-        # gc.collect()
-        # torch.cuda.empty_cache()
+        # ========== Clean Conv Cache ==========
+        del conv_cache
+        gc.collect()
+        torch.cuda.empty_cache()
         # ===================================
         return enc
 
