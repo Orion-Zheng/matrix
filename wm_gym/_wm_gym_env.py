@@ -1,13 +1,24 @@
 import argparse
-from typing import Literal, Optional
+from typing import Literal, Optional, Union
 from dataclasses import dataclass
 import numpy as np
 import random
 import sys, os
 sys.path.insert(0, os.path.abspath('.'))
+# import sys
+# sys.path.insert(0, '/'.join(os.path.realpath(__file__).split('/')[:-2]))
+# print( '/'.join(os.path.realpath(__file__).split('/')[:-2]))
+
+import PIL.Image
+import datetime
+import random
+import decord
 import torch
-from wm_gym.vlm_reward_model import OpenAIRewardModel
+from diffusers.utils import export_to_video, load_image, load_video
+
 from wm_gym.pipelines import CogVideoXStreamingPipeline
+# from wm_gym.cogvideox.pipelines import CogVideoXStreamingPipeline
+from wm_gym.vlm_reward_model import OpenAIRewardModel
 from wm_gym.cogvideox.transformer import CogVideoXTransformer3DModel
 from wm_gym.cogvideox.scheduler import LCMSwinScheduler
 
@@ -22,12 +33,6 @@ from wm_gym.cogvideox.scheduler import (
     expand_timesteps_with_group,
 )
 from wm_gym.cogvideox.control_adapter import CONTROL_SIGNAL_TO_PROMPT
-
-from diffusers.utils import export_to_video, load_image, load_video
-
-import decord
-import PIL.Image
-import datetime
 
 @dataclass
 class VLMRewardArgs:
@@ -117,7 +122,7 @@ def prepare_wm_env_init_args(wm_gen_config):
     }
     return init_args
 
-def load_matrix_gym_pipe(wm_gen_config, disable_progress_bar=False):
+def load_matrix_gym_pipe(wm_gen_config):
     transformer = CogVideoXTransformer3DModel.from_pretrained(
             os.path.join(wm_gen_config.model_path, "transformer"),
             torch_dtype=wm_gen_config.dtype,
@@ -125,21 +130,22 @@ def load_matrix_gym_pipe(wm_gen_config, disable_progress_bar=False):
     # NOTE: `keep_cache` feature conflicts with the tiling/slicing feature
     vae = AutoencoderKLCogVideoX.from_pretrained(os.path.join(wm_gen_config.model_path, 'vae'), 
                                                     torch_dtype=wm_gen_config.dtype)
-    # vae.to(0)
-    # v = vae.encode(torch.randn((1, 3, 17, 480, 720), dtype=torch.float16).to(vae.device))
     pipe = CogVideoXStreamingPipeline.from_pretrained(wm_gen_config.model_path, 
                                                         vae=vae, transformer=transformer, 
                                                         torch_dtype=wm_gen_config.dtype)
     pipe.scheduler = LCMSwinScheduler.from_config(pipe.scheduler.config)
-    pipe.set_progress_bar_config(disable=disable_progress_bar) 
     if wm_gen_config.lora_path:  # If you're using with lora, add this code
         pipe.load_lora_weights(wm_gen_config.lora_path, 
                                weight_name="pytorch_lora_weights.safetensors")
         pipe.fuse_lora(components=["transformer"],)  # lora_scale=1 / lora_rank  # It seems that there are some issues here, removed.
     pipe.to(wm_gen_config.gpu_id)  # pipe._execution_device from cpu --> cuda:0
     pipe.wm_gen_config = wm_gen_config
+    pipe.vae.enable_slicing()
+    pipe.vae.enable_tiling()
     wm_init_args = prepare_wm_env_init_args(wm_gen_config)
     pipe.gym_init(**wm_init_args)
+    pipe.vae.disable_slicing()
+    pipe.vae.disable_tiling()
     return pipe
     
 class matrixGym:
@@ -226,20 +232,20 @@ def test():
     export_to_video(video_clip, fps=matrix_gen_config.fps, 
                     output_video_path=os.path.join(debug_clip_output_dir, "0_reset_video.mp4"))
     
-    state, reward, terminated, truncated, info = env.step("DL", skip_reward=True)
+    state, reward, terminated, truncated, info = env.step("DL")
     video_clip = env.render(mode="pil")
     print("reward: ", reward)
     print("vlm_response", info)
     export_to_video(video_clip, fps=matrix_gen_config.fps, 
                     output_video_path=os.path.join(debug_clip_output_dir, "1_DL_video.mp4"))
     
-    state, reward, terminated, truncated, info = env.step("DR", skip_reward=True)
+    state, reward, terminated, truncated, info = env.step("DR")
     video_clip = env.render(mode="pil")
     print("reward: ", reward)
     print("vlm_response", info)
     export_to_video(video_clip, fps=matrix_gen_config.fps, 
                     output_video_path=os.path.join(debug_clip_output_dir, "2_DR_video.mp4"))
     
+    
 if __name__ == "__main__":
-    # main()
     test()
