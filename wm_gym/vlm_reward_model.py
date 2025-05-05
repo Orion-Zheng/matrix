@@ -42,7 +42,14 @@ class OpenAIRewardModel:
         contents.append({"type": "text", "text": self.query_prompt})
         return contents
 
-    def analyze(self, images: List[Union[str, Image.Image]], temperature: float = 0.0) -> Tuple[str, str]:
+    def analyze(self, images: List[Union[str, Image.Image]], temperature: float = 0.0, down_sample=4) -> Tuple[str, str]:
+        def downsample_list(lst, k):
+            if len(lst) <= k:
+                return lst
+            step = len(lst) / k
+            return [lst[int(i * step)] for i in range(k)]
+        images = downsample_list(images, down_sample)
+        
         contents = self._build_contents(images)
 
         response = self.client.chat.completions.create(

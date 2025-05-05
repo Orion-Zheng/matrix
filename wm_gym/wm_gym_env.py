@@ -158,17 +158,17 @@ class matrixGym:
         return self.current_state, info
     
     @torch.no_grad()
-    def vlm_feedback(self, observations, action=None):
+    def vlm_feedback(self, observations, frame_downsample, action=None):
         # vlm input: observations(pil_list), action(optional)
         # vlm output: reward, terminated, info
-        full_analysis, short_answer_reward = self.vlm_reward_model.analyze(observations)
+        full_analysis, short_answer_reward = self.vlm_reward_model.analyze(observations, down_sample=frame_downsample)
         reward = int(short_answer_reward)
         terminated = False
-        info = {"env info": full_analysis}
+        info = {"full_analysis": full_analysis}
         return reward, terminated, info
     
     @torch.no_grad()
-    def step(self, action, skip_reward=False):
+    def _step(self, action, skip_reward=False, frame_downsample=4):
         assert action in CONTROL_SIGNAL_TO_PROMPT.keys(), f"Invalid action: {action}. Valid actions are: {CONTROL_SIGNAL_TO_PROMPT.keys()}"
         truncated = False  # whether the episode is truncated by max_iteractions
         
@@ -178,7 +178,7 @@ class matrixGym:
         if skip_reward:
             reward, terminated, info = None, False, None
         else:
-            reward, terminated, info = self.vlm_feedback(self.current_pil_list, action)
+            reward, terminated, info = self.vlm_feedback(self.current_pil_list, frame_downsample, action)
         
         self.current_step += 1
         if self.current_step == self.wm_gen_config.max_iteractions:  
@@ -187,11 +187,52 @@ class matrixGym:
             print("Max iterations reached, stop generating.")
         return self.current_state, reward, terminated, truncated, info
     
+    def step(self, action, pad_k_step=0, padding_action="D", skip_reward=False, frame_downsample=4):
+        # Action may have some delay, so we need to step k times to ensure the action is applied.
+        # We take the action then pad the rest of the steps with padding_action.
+        # The reward is calculated from the clip of all the steps.
+        assert action in CONTROL_SIGNAL_TO_PROMPT.keys(), f"Invalid action: {action}. Valid actions are: {CONTROL_SIGNAL_TO_PROMPT.keys()}"
+        truncated = False  # whether the episode is truncated by max_iteractions
+        
+        total_pil_list = []
+        total_frames = []
+        total_states = []
+        current_state, current_frames, pil_list = self.wm_gym_pipe.gym_step(action)
+        total_states.append(current_state.clone())
+        total_frames.append(current_frames.clone())
+        total_pil_list.extend(pil_list.copy())
+        
+        for _ in range(pad_k_step):
+            current_state, current_frames, pil_list = self.wm_gym_pipe.gym_step(padding_action)
+            total_states.append(current_state.clone())
+            total_frames.append(current_frames.clone())
+            total_pil_list.extend(pil_list.copy())
+        
+        self.current_state = total_states    
+        self.current_frames = total_frames
+        self.current_pil_list = total_pil_list
+        
+        if skip_reward:
+            reward, terminated, info = None, False, None
+        else:
+            reward, terminated, info = self.vlm_feedback(total_pil_list, frame_downsample, action)
+        
+        self.current_step += 1
+        if self.current_step == self.wm_gen_config.max_iteractions:  
+            truncated = terminated = True
+            info = {}
+            print("Max iterations reached, stop generating.")
+        
+        return total_states, reward, terminated, truncated, info
+        
     @torch.no_grad()
     def render(self, mode="pil"):
-        observation = self.wm_gym_pipe.gym_render(mode=mode)
-        return observation
-
+        if mode == "pil":
+            return self.current_pil_list
+        elif mode == "rgb":
+            return self.current_frames
+        else:
+            raise ValueError(f"Invalid mode: {mode}. Valid modes are: pil, rgb.")
 
 def test():
     matrix_gen_config = MatrixGenerationArgs(
@@ -206,15 +247,14 @@ def test():
         model="gpt-4o",
         api_key="debug",#os.environ["OPENAI_API_KEY"],
         reward_query = (
-            "You are a video analyst. Your task is to analyze a sequence of consecutive images and describe the spatial relationship "
-            "between the car and any potential obstacles. Based on this analysis, assess the risk of a possible collision. "
+            "Given these consecutive images from a car racing game, analyze the moving direction and the locations of possible obstacles. And answer the question: do you think the car has any collision with obstacles during the process? "
+            "In this game, collisions don’t actually cause any damage — even if the car passes through an obstacle, it still counts as a collision."
         ),
         reward_criteria = (
             "Here is the video description: {} "
-            "Return 1 if there is no risk of collision with any obstacle. "
-            "Return 0 if there is a potential risk of collision, but no collision has occurred yet. "
+            "Return 1 if there is not any collision happened between the car and an obstacle, "
             "Return -1 if you believe a collision has already occurred between the car and an obstacle, regardless of whether there was damage."
-            "Your response must only contain one of the following: 1, 0, or -1. Do not include any additional explanation or description."
+            "Your response must only contain one of the following: 1 or -1. Do not include any additional explanation or description."
         ),
     )
     seed_everything(matrix_gen_config.seed)
